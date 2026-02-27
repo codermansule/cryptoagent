@@ -29,6 +29,7 @@ from src.signals.ensemble   import EnsembleSignal, compute_ensemble
 from src.decision.confluence import ConfluenceResult, compute_confluence
 from src.decision.regime     import Regime, detect_regime, regime_multipliers
 from src.signals.technical.indicators import atr, compute_all
+from src.data.feeds.sentiment_feed import SentimentFeed
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,9 @@ class DecisionEngine:
         self._model_path = model_path
         self._classifier_lock = asyncio.Lock()
 
+        # Live sentiment + on-chain data (refreshed every 5 min)
+        self._sentiment_feed = SentimentFeed()
+
         # Circuit breaker state
         self._daily_pnl_pct: float = 0.0
         self._halted: bool = False
@@ -163,6 +167,9 @@ class DecisionEngine:
             # ML prediction (run in executor to avoid blocking event loop)
             ml_signal, ml_conf = await self._get_ml_prediction(symbol, df)
 
+            # Sentiment + on-chain data (cached, refreshed every 5 min)
+            await self._sentiment_feed.refresh_if_stale()
+
             # Ensemble signal for this timeframe
             signal = compute_ensemble(
                 df=df,
@@ -171,6 +178,8 @@ class DecisionEngine:
                 ml_signal=ml_signal,
                 ml_confidence=ml_conf,
                 min_confidence=self.min_confidence,
+                sentiment_data=self._sentiment_feed.sentiment_data,
+                onchain_data=self._sentiment_feed.onchain_data,
             )
 
             # Cache signal
@@ -197,13 +206,25 @@ class DecisionEngine:
         signals: list[EnsembleSignal],
     ) -> None:
         """Check for multi-timeframe confluence and emit a trade decision if valid."""
-        # Treat 1H as HTF trend bias (alongside the usual 4H/1D/1W).
-        # LTF entry triggers are 15m and below. This enables 15m+1H confluence.
+        # Adaptive min_agreeing based on 4h signal state:
+        #   - 4h agrees with majority  → require all 3 TFs (min_agreeing=3, high conviction)
+        #   - 4h is flat (direction=0) → allow 15m+1h to be sufficient (min_agreeing=2)
+        #   - 4h actively opposes      → block (majority won't reach 3, handled naturally)
+        cached = self._signal_cache.get(symbol, {})
+        htf_4h = cached.get("4h")
+
+        if htf_4h is not None and htf_4h.direction == 0:
+            # 4h is neutral — don't force a wait; let 15m+1h confluence through
+            min_agreeing = 2
+        else:
+            # 4h is active (agrees or opposes) — require full 3-TF agreement
+            min_agreeing = 3
+
         result = compute_confluence(
             signals,
             htf_timeframes=["1h", "4h", "1d", "1w"],
             ltf_timeframes=["5m", "15m", "30m"],
-            min_agreeing=3,   # require all 3 subscribed TFs (15m+1h+4h) to agree
+            min_agreeing=min_agreeing,
         )
         if result is None or not result.is_valid:
             return

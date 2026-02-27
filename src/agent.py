@@ -75,11 +75,16 @@ class CryptoAgent:
         await self._db.initialize_schema()
 
         # Recover any positions that were open when the agent last stopped
+        recovered_symbols: list = []
         if self._paper:
-            await self._recover_paper_positions()
+            recovered_symbols = await self._recover_paper_positions() or []
 
         # Pre-load historical candles so the signal engine is warm on first tick
         await self._preload_buffers()
+
+        # Recalculate SL/TP for recovered positions using current ATR from warm buffers
+        if self._paper and recovered_symbols:
+            await self._recalculate_recovered_sl(recovered_symbols)
 
         # Subscribe private streams (orders & positions)
         await self._exchange.subscribe_orders(self._on_order_update)
@@ -181,6 +186,52 @@ class CryptoAgent:
             positions=recovered,
             recovered_balance=round(recovered_balance, 4),
         )
+        return recovered
+
+    async def _recalculate_recovered_sl(self, recovered_symbols: list) -> None:
+        """
+        After buffers are warm, recalculate SL/TP for recovered positions
+        using the current ATR so stale SLs from a previous run don't fire instantly.
+        """
+        import pandas as pd
+        import numpy as np
+        from src.signals.technical.indicators import atr as compute_atr
+
+        atr_mult = self._settings.atr_sl_multiplier
+        rr_ratio = self._settings.rr_ratio
+
+        for symbol in recovered_symbols:
+            pos = self._paper._positions.get(symbol)
+            if pos is None:
+                continue
+            buf = self._candle_buffers.get(symbol, {}).get("15m")
+            if not buf or len(buf) < 20:
+                continue
+
+            df = pd.DataFrame(buf)
+            atr_series = compute_atr(df, 14)
+            atr_val = float(atr_series.iloc[-1])
+            if np.isnan(atr_val) or atr_val <= 0:
+                continue
+
+            current_price = float(df["close"].iloc[-1])
+            from src.exchanges.base import PositionSide
+            if pos.side == PositionSide.LONG:
+                new_sl = current_price - atr_mult * atr_val
+                new_tp = current_price + rr_ratio * atr_mult * atr_val
+            else:
+                new_sl = current_price + atr_mult * atr_val
+                new_tp = current_price - rr_ratio * atr_mult * atr_val
+
+            pos.sl_price = round(new_sl, 6)
+            pos.tp_price = round(new_tp, 6)
+            logger.info(
+                "Recalculated SL/TP for recovered position",
+                symbol=symbol, side=pos.side.value,
+                entry=pos.entry_price, current=current_price,
+                new_sl=round(new_sl, 4), new_tp=round(new_tp, 4),
+                atr=round(atr_val, 4),
+            )
 
     async def _preload_buffers(self) -> None:
         """Fetch recent historical candles so signal engine is warm immediately."""
