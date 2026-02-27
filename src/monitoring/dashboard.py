@@ -1166,6 +1166,158 @@ def render_positions():
     """, unsafe_allow_html=True)
 
 
+@st.fragment(run_every="30s")
+def render_sentiment_data():
+    """Display sentiment and on-chain data - updates every 30s."""
+    import aiohttp
+    
+    st.subheader("📊 Market Intelligence")
+    
+    # Create columns for different data types
+    col1, col2, col3 = st.columns(3)
+    
+    # ── Fear & Greed Index ──────────────────────────────
+    with col1:
+        try:
+            fg_value = 50
+            fg_class = "Neutral"
+            
+            try:
+                import requests
+                resp = requests.get("https://api.alternative.me/fng/", timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    fg_data = data.get("data", [{}])[0]
+                    fg_value = int(fg_data.get("value", 50))
+                    fg_class = fg_data.get("value_classification", "Neutral")
+            except:
+                pass
+            
+            # Color based on value
+            if fg_value < 25:
+                fg_color = "#ff4d4d"
+            elif fg_value < 45:
+                fg_color = "#f0b429"
+            elif fg_value > 75:
+                fg_color = "#00ffa3"
+            elif fg_value > 55:
+                fg_color = "#00ffa3"
+            else:
+                fg_color = "#848e9c"
+            
+            st.markdown(f"""
+            <div style="background:#161a1e;padding:15px;border-radius:8px;border:1px solid #2d3139;">
+                <div style="color:#848e9c;font-size:0.75rem;text-transform:uppercase;">Fear & Greed</div>
+                <div style="font-size:2rem;font-weight:700;color:{fg_color};">{fg_value}</div>
+                <div style="color:{fg_color};font-size:0.85rem;">{fg_class}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        except Exception as e:
+            st.markdown(f"""
+            <div style="background:#161a1e;padding:15px;border-radius:8px;border:1px solid #2d3139;">
+                <div style="color:#848e9c;font-size:0.75rem;text-transform:uppercase;">Fear & Greed</div>
+                <div style="color:#848e9c;">Unavailable</div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # ── BTC Dominance ──────────────────────────────
+    with col2:
+        try:
+            btc_dom = 50.0
+            alt_dom = 50.0
+            
+            try:
+                import requests
+                resp = requests.get("https://api.coingecko.com/api/v3/global", timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    dom_data = data.get("data", {}).get("market_cap_percentage", {})
+                    btc_dom = dom_data.get("btc", 50)
+                    alt_dom = dom_data.get("altcoin", 50)
+            except:
+                pass
+            
+            st.markdown(f"""
+            <div style="background:#161a1e;padding:15px;border-radius:8px;border:1px solid #2d3139;">
+                <div style="color:#848e9c;font-size:0.75rem;text-transform:uppercase;">BTC Dominance</div>
+                <div style="font-size:2rem;font-weight:700;color:#f0b90b;">{btc_dom:.1f}%</div>
+                <div style="color:#848e9c;font-size:0.85rem;">Alts: {alt_dom:.1f}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+        except:
+            st.markdown(f"""
+            <div style="background:#161a1e;padding:15px;border-radius:8px;border:1px solid #2d3139;">
+                <div style="color:#848e9c;font-size:0.75rem;text-transform:uppercase;">BTC Dominance</div>
+                <div style="color:#848e9c;">Unavailable</div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # ── Funding Rate ──────────────────────────────
+    with col3:
+        try:
+            funding_rate = 0.0
+            
+            try:
+                import requests
+                resp = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT", timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    funding_rate = float(data.get("lastFundingRate", 0)) * 100
+            except:
+                pass
+            
+            if funding_rate > 0:
+                rate_color = "#ff4d4d"
+            else:
+                rate_color = "#00ffa3"
+            
+            st.markdown(f"""
+            <div style="background:#161a1e;padding:15px;border-radius:8px;border:1px solid #2d3139;">
+                <div style="color:#848e9c;font-size:0.75rem;text-transform:uppercase;">Binance Funding</div>
+                <div style="font-size:2rem;font-weight:700;color:{rate_color};">{funding_rate:+.4f}%</div>
+                <div style="color:#848e9c;font-size:0.85rem;">BTCUSDT Perpetual</div>
+            </div>
+            """, unsafe_allow_html=True)
+        except:
+            st.markdown(f"""
+            <div style="background:#161a1e;padding:15px;border-radius:8px;border:1px solid #2d3139;">
+                <div style="color:#848e9c;font-size:0.75rem;text-transform:uppercase;">Binance Funding</div>
+                <div style="color:#848e9c;">Unavailable</div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    
+    # ── Latest News ──────────────────────────────
+    st.markdown("### 📰 Latest Crypto News")
+    try:
+        import requests
+        resp = requests.get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN&limit=5", timeout=5)
+        if resp.status_code == 200:
+            news_data = resp.json().get("Data", [])
+            
+            if news_data:
+                for news in news_data[:5]:
+                    title = news.get("title", "")
+                    source = news.get("source_info", {}).get("name", "Unknown")
+                    url = news.get("url", "#")
+                    categories = news.get("categories", "").split("|")[:3]
+                    
+                    st.markdown(f"""
+                    <div style="background:#161a1e;padding:12px;margin-bottom:8px;border-radius:6px;border:1px solid #2d3139;">
+                        <a href="{url}" target="_blank" style="color:#fff;text-decoration:none;font-weight:500;">{title}</a>
+                        <div style="margin-top:4px;">
+                            <span style="color:#848e9c;font-size:0.75rem;">{source}</span>
+                            {"".join(f'<span style="background:#2d3139;padding:2px 6px;margin-left:4px;border-radius:4px;font-size:0.7rem;color:#848e9c;">{c}</span>' for c in categories if c)}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No news available")
+    except Exception as e:
+        st.info("News unavailable")
+
+
 @st.fragment(run_every="2s")
 def render_signals():
     """Recent signals with live current price — updates every 2 s."""
@@ -1446,7 +1598,10 @@ def main():
         with tabs[1]: render_price_charts()
         with tabs[2]: render_paper_trades()
         with tabs[3]: render_positions()
-        with tabs[4]: render_signals()
+        with tabs[4]:
+            render_sentiment_data()
+            st.markdown("<hr style='margin:20px 0;border-color:#2d3139;'>", unsafe_allow_html=True)
+            render_signals()
         with tabs[5]: render_trade_history(orders)
         with tabs[6]: render_logs(150)
 
