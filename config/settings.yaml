@@ -75,13 +75,13 @@ sentiment:
     - coingecko
   news_weight: 0.25
   
-  # Twitter/X sentiment
-  twitter_enabled: false              # requires Twitter API
-  twitter_weight: 0.20
+  # Twitter/X sentiment (disabled - API now requires paid subscription)
+  twitter_enabled: false
+  twitter_weight: 0.0
   
-  # Reddit sentiment
-  reddit_enabled: true
-  reddit_weight: 0.20
+  # Reddit sentiment (disabled - requires API approval)
+  reddit_enabled: false
+  reddit_weight: 0.0
   
   # Google Trends
   google_trends_enabled: true
@@ -114,9 +114,9 @@ onchain:
 
 # ── Signal Weights ───────────────────────────────────────────────────────────
 ensemble_weights:
-  technical: 0.25
-  structure: 0.20
-  ml: 0.25
+  technical: 0.30
+  structure: 0.25
+  ml: 0.30
   volume: 0.10
-  sentiment: 0.10
-  onchain: 0.10
+  sentiment: 0.05
+  onchain: 0.05
