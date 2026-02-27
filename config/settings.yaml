@@ -92,24 +92,24 @@ onchain:
   enabled: true
   refresh_interval_seconds: 300        # 5 minutes
   
-  # Cross-exchange funding rates
+  # Cross-exchange funding rates (free APIs)
   funding_enabled: true
-  funding_weight: 0.25
+  funding_weight: 0.30
   
-  # Open Interest
+  # Open Interest (free from Binance)
   oi_enabled: true
-  oi_weight: 0.20
+  oi_weight: 0.25
   
-  # Liquidations
+  # Liquidations (estimated from price moves)
   liquidations_enabled: true
   liquidations_weight: 0.25
   
-  # BTC Dominance
+  # BTC Dominance (free from CoinGecko)
   dominance_enabled: true
-  dominance_weight: 0.15
+  dominance_weight: 0.20
   
-  # Whale Alerts
-  whales_enabled: true
+  # Whale Alerts (disabled - requires paid API)
+  whales_enabled: false
   whale_min_value_usd: 100000
 
 # ── Signal Weights ───────────────────────────────────────────────────────────
