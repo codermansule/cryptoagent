@@ -1,0 +1,41 @@
+# ── Exchange Endpoint Configuration ──────────────────────────────────────────
+
+blofin:
+  name: BloFin
+  rest_base_url: https://openapi.blofin.com
+  ws_public_url: wss://openapi.blofin.com/ws/public
+  ws_private_url: wss://openapi.blofin.com/ws/private
+  testnet_rest_url: https://openapi.blofin.com      # BloFin uses same URL with demo flag
+  rate_limits:
+    rest_requests_per_second: 10
+    ws_subscriptions_max: 100
+  endpoints:
+    # Market Data
+    tickers: /api/v1/market/tickers
+    ticker: /api/v1/market/tickers
+    orderbook: /api/v1/market/books
+    candles: /api/v1/market/candles
+    trades: /api/v1/market/trades
+    instruments: /api/v1/market/instruments
+    funding_rate: /api/v1/market/funding-rate
+    funding_rate_history: /api/v1/market/funding-rate-history
+    open_interest: /api/v1/market/open-interest
+    # Account
+    account_balance: /api/v1/account/balance
+    positions: /api/v1/account/positions
+    # Trading
+    place_order: /api/v1/trade/order
+    cancel_order: /api/v1/trade/cancel-order
+    cancel_all_orders: /api/v1/trade/cancel-batch-orders
+    get_order: /api/v1/trade/order
+    get_orders: /api/v1/trade/orders-pending
+    get_history: /api/v1/trade/orders-history
+    set_leverage: /api/v1/account/set-leverage
+    set_margin_mode: /api/v1/account/set-margin-mode
+    set_position_mode: /api/v1/account/set-position-mode
+
+binance:
+  name: Binance
+  rest_base_url: https://fapi.binance.com
+  ws_base_url: wss://fstream.binance.com
+  enabled: false

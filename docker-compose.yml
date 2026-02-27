@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: cryptoagent_timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cryptoagent
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: password
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+
+  redis:
+    image: redis:7-alpine
+    container_name: cryptoagent_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  agent:
+    build: .
+    container_name: cryptoagent
+    restart: unless-stopped
+    depends_on:
+      - timescaledb
+      - redis
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config:ro
+      - ./models:/app/models
+      - ./logs:/app/logs
+    command: python -m src.agent
+
+  dashboard:
+    build: .
+    container_name: cryptoagent_dashboard
+    restart: unless-stopped
+    depends_on:
+      - timescaledb
+      - redis
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    command: streamlit run src/monitoring/dashboard.py --server.port=8501 --server.address=0.0.0.0
+
+volumes:
+  timescale_data:
+  redis_data:

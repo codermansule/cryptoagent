@@ -1,0 +1,122 @@
+# ── Agent Global Settings ─────────────────────────────────────────────────────
+agent:
+  mode: paper                         # paper | live
+  primary_exchange: blofin
+  log_level: INFO
+  heartbeat_interval: 5               # seconds
+
+# ── Trading Universe ─────────────────────────────────────────────────────────
+trading:
+  symbols:
+    - BTC-USDC
+    - ETH-USDC
+    - SOL-USDC
+  market_types:
+    - futures                         # futures | spot
+  default_leverage: 5
+  max_leverage: 20
+  timeframes:
+    - 1m
+    - 5m
+    - 15m
+    - 1h
+    - 4h
+    - 1d
+  primary_timeframe: 15m
+
+# ── Signal Engine ─────────────────────────────────────────────────────────────
+signals:
+  min_confidence_threshold: 55        # minimum ensemble confidence to generate a signal
+  confluence_required: 3              # all 3 subscribed TFs (15m+1h+4h) must agree
+  lookback_candles: 500               # candles fed into ML models
+
+# ── Risk Manager ─────────────────────────────────────────────────────────────
+risk:
+  max_portfolio_risk_pct: 2.0         # max % of portfolio at risk at any time
+  max_single_trade_risk_pct: 0.5      # max % risked per trade
+  max_daily_drawdown_pct: 5.0         # circuit breaker: halt if exceeded
+  max_weekly_drawdown_pct: 10.0
+  kelly_fraction: 0.25                # fractional Kelly (conservative)
+  min_liquidation_distance_atr: 3.0   # entry must be 3x ATR from liquidation
+  max_open_positions: 5
+  max_correlated_positions: 2         # max positions in correlated assets
+  atr_sl_multiplier: 2.5              # stop = entry ± N*ATR (wider = fewer noise SLs)
+  rr_ratio: 2.0                       # reward:risk ratio for take-profit
+  adx_min_threshold: 25.0             # minimum ADX to confirm trend — blocks ranging market entries
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+execution:
+  default_order_type: limit           # limit | market
+  limit_order_offset_pct: 0.05        # how far inside spread to place limit
+  max_slippage_pct: 0.1               # cancel if expected slippage exceeds this
+  order_timeout_seconds: 30           # cancel unfilled limit orders after N sec
+  retry_attempts: 3
+  retry_backoff_seconds: 2
+
+# ── Paper Trading ─────────────────────────────────────────────────────────────
+paper:
+  starting_balance: 10000             # USDT
+  simulated_fee_pct: 0.05             # maker fee
+  simulated_slippage_pct: 0.02
+
+# ── Sentiment & Intelligence ─────────────────────────────────────────────────
+sentiment:
+  enabled: true
+  refresh_interval_seconds: 300        # 5 minutes
+  
+  # Fear & Greed Index
+  fear_greed_enabled: true
+  fear_greed_weight: 0.35
+  
+  # News aggregation
+  news_enabled: true
+  news_sources:                      # priority order
+    - cryptocompare
+    - coingecko
+  news_weight: 0.25
+  
+  # Twitter/X sentiment
+  twitter_enabled: false              # requires Twitter API
+  twitter_weight: 0.20
+  
+  # Reddit sentiment
+  reddit_enabled: true
+  reddit_weight: 0.20
+  
+  # Google Trends
+  google_trends_enabled: true
+  google_trends_weight: 0.10
+
+# ── On-Chain Data ─────────────────────────────────────────────────────────────
+onchain:
+  enabled: true
+  refresh_interval_seconds: 300        # 5 minutes
+  
+  # Cross-exchange funding rates
+  funding_enabled: true
+  funding_weight: 0.25
+  
+  # Open Interest
+  oi_enabled: true
+  oi_weight: 0.20
+  
+  # Liquidations
+  liquidations_enabled: true
+  liquidations_weight: 0.25
+  
+  # BTC Dominance
+  dominance_enabled: true
+  dominance_weight: 0.15
+  
+  # Whale Alerts
+  whales_enabled: true
+  whale_min_value_usd: 100000
+
+# ── Signal Weights ───────────────────────────────────────────────────────────
+ensemble_weights:
+  technical: 0.25
+  structure: 0.20
+  ml: 0.25
+  volume: 0.10
+  sentiment: 0.10
+  onchain: 0.10

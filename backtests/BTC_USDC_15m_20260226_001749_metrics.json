@@ -1,0 +1,16 @@
+{
+  "total_trades": 13,
+  "win_rate": 0.6153846153846154,
+  "avg_win_usdc": 0.9195174714919249,
+  "avg_loss_usdc": -0.41886649047027485,
+  "expectancy_usdc": 0.40475440919877104,
+  "profit_factor": 3.51240308752148,
+  "total_pnl_usdc": 5.261807319584477,
+  "total_return_pct": 0.0005261807319584477,
+  "max_drawdown_pct": -0.00033366993010717474,
+  "sharpe_ratio": 11.967950463390633,
+  "sortino_ratio": 13.094323687603822,
+  "calmar_ratio": 1.5769498072227466,
+  "sl_hits": 5,
+  "tp_hits": 8
+}

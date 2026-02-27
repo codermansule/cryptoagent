@@ -1,0 +1,16 @@
+{
+  "total_trades": 1,
+  "win_rate": 1.0,
+  "avg_win_usdc": 12.282587465971295,
+  "avg_loss_usdc": 0.0,
+  "expectancy_usdc": 12.282587465971295,
+  "profit_factor": Infinity,
+  "total_pnl_usdc": 12.282587465972028,
+  "total_return_pct": 0.0012282587465972028,
+  "max_drawdown_pct": -0.000380900571343425,
+  "sharpe_ratio": 8.078911188464403,
+  "sortino_ratio": 3.617340720770951,
+  "calmar_ratio": 3.2246177585537192,
+  "sl_hits": 0,
+  "tp_hits": 1
+}
