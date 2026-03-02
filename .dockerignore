@@ -1,0 +1,17 @@
+.venv/
+.venv_312/
+venv/
+logs/
+.git/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.log
+backtests/
+notebooks/
+.env
+.pytest_cache/
+project.md
+README.md
+Dockerfile
+docker-compose.yml

@@ -44,12 +44,14 @@ class ConfluenceResult:
     signals:       list[EnsembleSignal] = field(default_factory=list)
     notes:         list[str]    = field(default_factory=list)
 
+    min_confidence: float = 25.0   # set by compute_confluence from runtime.json
+
     @property
     def is_valid(self) -> bool:
         return (self.direction != 0
                 and self.htf_aligned
                 and self.ltf_trigger
-                and self.confidence >= 55.0)
+                and self.confidence >= self.min_confidence)
 
 
 def compute_confluence(
@@ -58,6 +60,7 @@ def compute_confluence(
     ltf_timeframes: Optional[list[str]] = None,
     min_agreeing: int = 2,
     htf_bonus: float = 10.0,
+    min_confidence: float = 25.0,
 ) -> Optional[ConfluenceResult]:
     """
     Compute multi-timeframe confluence from a list of EnsembleSignals
@@ -129,6 +132,7 @@ def compute_confluence(
         total_signals=len(signals),
         signals=agreeing,
         notes=notes,
+        min_confidence=min_confidence,
     )
 
     logger.debug(

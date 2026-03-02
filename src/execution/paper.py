@@ -33,6 +33,11 @@ class PaperPosition:
     tp_price: float = 0.0
     realized_pnl: float = 0.0
     opened_at: int = 0                # Unix ms when position was opened
+    # Trailing stop
+    trailing_activation: float = 0.0  # price distance from entry to activate trail (0 = disabled)
+    trailing_distance: float = 0.0    # trail this many price units behind best_price
+    best_price: float = 0.0           # most favorable price seen since open
+    trailing_active: bool = False     # True once profit >= trailing_activation
 
     def unrealized_pnl(self, mark_price: float) -> float:
         if self.side == PositionSide.LONG:
@@ -84,6 +89,7 @@ class PaperEngine:
         self._peak_equity: float = self._settings.paper_starting_balance
         self._total_fees_paid: float = 0.0
         self._pending_closes: list[dict] = []             # closed trade events for async processing
+        self._order_trailing: dict[str, tuple[float, float]] = {}  # order_id -> (activation, distance)
 
         logger.info(
             "Paper engine initialized",
@@ -103,6 +109,34 @@ class PaperEngine:
         pos = self._positions.get(symbol)
         if not pos:
             return
+
+        # Update trailing stop before evaluating SL/TP
+        if pos.trailing_activation > 0:
+            if pos.best_price == 0.0:
+                pos.best_price = pos.entry_price
+            if pos.side == PositionSide.LONG:
+                if price > pos.best_price:
+                    pos.best_price = price
+                if not pos.trailing_active and (pos.best_price - pos.entry_price) >= pos.trailing_activation:
+                    pos.trailing_active = True
+                    logger.info("Trailing stop activated", symbol=symbol,
+                                best=round(pos.best_price, 4), activation=round(pos.trailing_activation, 4))
+                if pos.trailing_active:
+                    new_sl = pos.best_price - pos.trailing_distance
+                    if new_sl > pos.sl_price:
+                        pos.sl_price = new_sl
+            else:  # SHORT
+                if price < pos.best_price:
+                    pos.best_price = price
+                if not pos.trailing_active and (pos.entry_price - pos.best_price) >= pos.trailing_activation:
+                    pos.trailing_active = True
+                    logger.info("Trailing stop activated", symbol=symbol,
+                                best=round(pos.best_price, 4), activation=round(pos.trailing_activation, 4))
+                if pos.trailing_active:
+                    new_sl = pos.best_price + pos.trailing_distance
+                    if new_sl < pos.sl_price:
+                        pos.sl_price = new_sl
+
         if pos.tp_price and (
             (pos.side == PositionSide.LONG and price >= pos.tp_price)
             or (pos.side == PositionSide.SHORT and price <= pos.tp_price)
@@ -113,8 +147,9 @@ class PaperEngine:
             (pos.side == PositionSide.LONG and price <= pos.sl_price)
             or (pos.side == PositionSide.SHORT and price >= pos.sl_price)
         ):
-            logger.info("SL triggered", symbol=symbol, price=price, sl=pos.sl_price)
-            self._close_position(symbol, price, reason="stop_loss")
+            reason = "trailing_stop" if pos.trailing_active else "stop_loss"
+            logger.info("SL triggered", symbol=symbol, price=price, sl=pos.sl_price, reason=reason)
+            self._close_position(symbol, price, reason=reason)
 
     def _check_limit_orders(self, symbol: str, price: float) -> None:
         for oid, order in list(self._open_orders.items()):
@@ -140,13 +175,21 @@ class PaperEngine:
         sl_price: float | None = None,
         tp_price: float | None = None,
         reduce_only: bool = False,
+        trailing_activation: float = 0.0,
+        trailing_distance: float = 0.0,
     ) -> Order:
-        mark = self._prices.get(symbol)
+        mark = self._prices.get(symbol) or price
         if mark is None:
             raise ValueError(f"No price available for {symbol} — feed may not be running")
+        # Seed the price cache so SL/TP checks work immediately after order placement
+        if symbol not in self._prices:
+            self._prices[symbol] = mark
 
         order_id = f"paper_{uuid.uuid4().hex[:12]}"
         exec_price = price or mark
+
+        # Store trailing params keyed by order_id for use when the order fills
+        self._order_trailing[order_id] = (trailing_activation, trailing_distance)
 
         order = Order(
             order_id=order_id,
@@ -182,6 +225,7 @@ class PaperEngine:
         notional = fill_price * order.size
         fee = notional * self._fee_pct
         settings = get_settings()
+        trailing_activation, trailing_distance = self._order_trailing.pop(order.order_id, (0.0, 0.0))
 
         if not order.reduce_only:
             # If a position already exists for this symbol, close it first
@@ -215,6 +259,9 @@ class PaperEngine:
                 sl_price=order.sl_price,
                 tp_price=order.tp_price,
                 opened_at=int(time.time() * 1000),
+                trailing_activation=trailing_activation,
+                trailing_distance=trailing_distance,
+                best_price=fill_price,
             )
             self._positions[order.symbol] = pos
         else:
@@ -287,6 +334,7 @@ class PaperEngine:
         if order:
             order.status = OrderStatus.CANCELLED
             self._order_history.append(order)
+            self._order_trailing.pop(order_id, None)
             return True
         return False
 

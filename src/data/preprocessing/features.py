@@ -119,6 +119,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["vol_ratio"]  = df["volume"] / vol_ma.replace(0, np.nan)
     feat["cvd_norm"]   = ind["cvd"].diff() / (df["volume"].rolling(20).mean().replace(0, np.nan))
     feat["obv_diff"]   = ind["obv"].diff() / (df["volume"].rolling(20).mean().replace(0, np.nan))
+    feat["vwap_cross"] = ind["vwap_cross"]   # +1 cross above VWAP, -1 cross below, 0 none
 
     # ── Lagged features (t-1, t-2, t-3) ──────────────────────────────────
     lag_cols = ["returns_1", "rsi14", "macd_hist_norm", "atr_pct",
@@ -138,6 +139,27 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["ret_sum_5"]    = ret.rolling(5).sum()
     feat["ret_sum_10"]   = ret.rolling(10).sum()
     feat["pos_ret_frac"] = (ret > 0).rolling(10).mean()   # fraction of up bars
+
+    # ── Time-of-day features (cyclical encoding) ───────────────────────────
+    # Crypto has strong intraday seasonality: Asian/European/US sessions,
+    # weekday vs weekend liquidity differences — cyclical sin/cos preserves
+    # the circular nature of time (23:59 is close to 00:00, Sunday close to Monday).
+    if "ts" in df.columns:
+        dt = pd.to_datetime(df["ts"], unit="ms", utc=True)
+        hour_frac         = dt.dt.hour + dt.dt.minute / 60.0
+        feat["hour_sin"]  = np.sin(2 * np.pi * hour_frac / 24)
+        feat["hour_cos"]  = np.cos(2 * np.pi * hour_frac / 24)
+        dow               = dt.dt.dayofweek.astype(float)  # 0=Mon, 6=Sun
+        feat["dow_sin"]   = np.sin(2 * np.pi * dow / 7)
+        feat["dow_cos"]   = np.cos(2 * np.pi * dow / 7)
+        feat["is_weekend"] = (dt.dt.dayofweek >= 5).astype(int)
+    else:
+        # Graceful fallback when no timestamp available (e.g. legacy data)
+        feat["hour_sin"]   = 0.0
+        feat["hour_cos"]   = 0.0
+        feat["dow_sin"]    = 0.0
+        feat["dow_cos"]    = 0.0
+        feat["is_weekend"] = 0
 
     # ── Replace inf with NaN, then forward-fill up to 2 bars ─────────────
     feat.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -220,7 +242,7 @@ def get_all_feature_names() -> list[str]:
         "rsi14", "rsi_ob", "rsi_os", "rsi_div", "macd_hist", "macd_hist_norm",
         "macd_cross", "srsi_k", "srsi_d", "srsi_kd", "atr_pct", "bb_pct_b",
         "bb_bw", "bb_squeeze", "atr_ratio", "vwap_dist", "vol_ratio",
-        "cvd_norm", "obv_diff", "ret_std_10", "ret_std_20", "ret_skew_20",
+        "cvd_norm", "obv_diff", "vwap_cross", "ret_std_10", "ret_std_20", "ret_skew_20",
         "ret_kurt_20", "ret_sum_5", "ret_sum_10", "pos_ret_frac",
     ]
     
@@ -236,8 +258,12 @@ def get_all_feature_names() -> list[str]:
         "liq_dominance", "liq_extreme", "btc_dominance", "altcoin_season",
         "btc_dominance_rising", "altcoin_season_active", "sentiment_regime"
     ]
-    
-    return base_features + lagged_features + sentiment_features
+
+    time_features = [
+        "hour_sin", "hour_cos", "dow_sin", "dow_cos", "is_weekend",
+    ]
+
+    return base_features + lagged_features + sentiment_features + time_features
 
 
 def prepare_dataset(

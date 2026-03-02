@@ -42,6 +42,8 @@ class Trade:
     def __init__(
         self, idx: int, side: str, entry: float, sl: float, tp: float,
         size_usdc: float, fee_pct: float,
+        trailing_activation: float = 0.0,
+        trailing_distance: float = 0.0,
     ):
         self.entry_idx   = idx
         self.side        = side          # "long" | "short"
@@ -55,6 +57,11 @@ class Trade:
         self.exit_reason: str = ""
         self.pnl:         float = 0.0
         self.pnl_pct:     float = 0.0
+        # Trailing stop
+        self.trailing_activation: float = trailing_activation  # price distance to activate
+        self.trailing_distance: float   = trailing_distance    # trail N price units behind best
+        self.best_price: float          = entry                # most favorable price seen
+        self.trailing_active: bool      = False                # is trail live?
 
     def close(self, idx: int, price: float, reason: str) -> None:
         self.exit_idx   = idx
@@ -73,6 +80,68 @@ class Trade:
         return self.exit_idx == -1
 
 
+# ── OHLCV resampler ───────────────────────────────────────────────────────────
+
+def resample_ohlcv(df: pd.DataFrame, period: int) -> pd.DataFrame:
+    """
+    Resample a bar-indexed OHLCV DataFrame by grouping every `period` rows.
+    e.g. period=4 converts 15m bars to 1h bars, period=16 → 4h bars.
+    Returns a new DataFrame indexed 0..n//period.
+    """
+    rows = []
+    for start in range(0, len(df) - period + 1, period):
+        chunk = df.iloc[start: start + period]
+        rows.append({
+            "open":   float(chunk["open"].iloc[0]),
+            "high":   float(chunk["high"].max()),
+            "low":    float(chunk["low"].min()),
+            "close":  float(chunk["close"].iloc[-1]),
+            "volume": float(chunk["volume"].sum()),
+            "src_end_idx": start + period - 1,   # last 15m bar index of this period
+        })
+    return pd.DataFrame(rows)
+
+
+def _precompute_tf_signals(
+    df: pd.DataFrame,
+    window: int,
+    min_confidence: float,
+    timeframe_label: str,
+    clf=None,
+) -> list[int]:
+    """
+    Compute ensemble direction for every bar in df using a rolling window.
+    Returns a list of direction values (+1/-1/0) of length len(df).
+    """
+    from src.signals.ensemble import compute_ensemble
+
+    directions = []
+    warmup = min(window // 2, 50)
+    for i in range(len(df)):
+        if i < warmup:
+            directions.append(0)
+            continue
+        start = max(0, i - window + 1)
+        chunk = df.iloc[start: i + 1].copy()
+        chunk.reset_index(drop=True, inplace=True)
+        ml_signal, ml_conf = 0, 0.0
+        if clf is not None:
+            try:
+                ml_signal, ml_conf = clf.predict(chunk)
+            except Exception:
+                pass
+        try:
+            sig = compute_ensemble(
+                df=chunk, symbol="bt", timeframe=timeframe_label,
+                ml_signal=ml_signal, ml_confidence=ml_conf,
+                min_confidence=min_confidence,
+            )
+            directions.append(sig.direction)
+        except Exception:
+            directions.append(0)
+    return directions
+
+
 # ── Signal generation (bar-by-bar rolling window) ─────────────────────────────
 
 def generate_signals(
@@ -83,10 +152,13 @@ def generate_signals(
     atr_sl_mult: float,
     rr_ratio: float,
     model_path: str = "models/lgbm_classifier.joblib",
+    use_mtf: bool = True,
+    min_agreeing: int = 2,
 ) -> pd.DataFrame:
     """
     Run compute_ensemble() on each bar with a rolling `window` of history.
-    Loads the trained LightGBM classifier and passes its predictions to the ensemble.
+    When use_mtf=True (default), also resamples to 1h and 4h and requires
+    min_agreeing timeframes to agree — matching live agent behaviour.
     Returns a DataFrame with columns: direction, confidence, sl, tp, atr.
     """
     from src.signals.ensemble import compute_ensemble
@@ -112,6 +184,30 @@ def generate_signals(
     tps          = np.zeros(n, dtype=float)
     atrs         = np.zeros(n, dtype=float)
 
+    # ── MTF pre-computation ────────────────────────────────────────────────────
+    # Resample 15m → 1h (×4) and → 4h (×16), precompute signals on each TF,
+    # then look up the most recent completed bar for each 15m bar.
+    # This avoids look-ahead bias: at 15m bar i, the last completed Xh bar
+    # is the one that finished at the last multiple of X before bar i.
+    htf_1h_dirs: list[int] = []
+    htf_4h_dirs: list[int] = []
+
+    if use_mtf:
+        print("  Pre-computing 1h signals (resample from 15m) ...")
+        df_1h = resample_ohlcv(df, 4)
+        htf_1h_dirs = _precompute_tf_signals(
+            df_1h[["open","high","low","close","volume"]], window=window//4,
+            min_confidence=min_confidence, timeframe_label="1h", clf=clf)
+
+        print("  Pre-computing 4h signals (resample from 15m) ...")
+        df_4h = resample_ohlcv(df, 16)
+        htf_4h_dirs = _precompute_tf_signals(
+            df_4h[["open","high","low","close","volume"]], window=window//16 or 10,
+            min_confidence=min_confidence, timeframe_label="4h", clf=clf)
+        print(f"  MTF enabled: need {min_agreeing}/3 TFs to agree")
+    else:
+        print(f"  Single-TF mode (use --mtf to enable confluence)")
+
     print(f"  Generating signals for {n} bars (window={window}, warmup={warmup}) ...")
 
     for i in range(warmup, n):
@@ -131,13 +227,26 @@ def generate_signals(
             sig = compute_ensemble(
                 df=chunk,
                 symbol="BT",
-                timeframe="bt",
+                timeframe="15m",
                 ml_signal=ml_signal,
                 ml_confidence=ml_conf,
                 min_confidence=min_confidence,
             )
         except Exception:
             continue
+
+        # ── MTF confluence gate ────────────────────────────────────────────────
+        if use_mtf and sig.direction != 0:
+            # Last completed 1h bar: floor(i / 4) - 1 (not yet closed at bar i unless i%4==3)
+            j_1h = i // 4 - 1
+            j_4h = i // 16 - 1
+            dir_1h = htf_1h_dirs[j_1h] if j_1h >= 0 and j_1h < len(htf_1h_dirs) else 0
+            dir_4h = htf_4h_dirs[j_4h] if j_4h >= 0 and j_4h < len(htf_4h_dirs) else 0
+
+            # Count TFs that agree with 15m direction
+            agreeing = [1 for d in [sig.direction, dir_1h, dir_4h] if d == sig.direction]
+            if sum(agreeing) < min_agreeing:
+                continue   # confluence not met — skip
 
         close = float(df["close"].iloc[i])
         atr_s = compute_atr(chunk, 14)
@@ -181,6 +290,8 @@ def simulate(
     kelly_fraction: float,
     rr_ratio: float,
     max_open: int,
+    trailing_activation_atr: float = 0.0,
+    trailing_distance_atr: float = 1.5,
 ) -> tuple[list[Trade], pd.Series]:
     """
     Simulate trade execution bar-by-bar.
@@ -204,6 +315,27 @@ def simulate(
         # ── Check open trades for SL/TP hits
         still_open = []
         for t in open_trades:
+            # Update trailing stop using this bar's high/low
+            if t.trailing_activation > 0:
+                if t.side == "long":
+                    if h > t.best_price:
+                        t.best_price = h
+                    if not t.trailing_active and (t.best_price - t.entry_price) >= t.trailing_activation:
+                        t.trailing_active = True
+                    if t.trailing_active:
+                        new_sl = t.best_price - t.trailing_distance
+                        if new_sl > t.sl:
+                            t.sl = new_sl
+                else:  # short
+                    if l < t.best_price:
+                        t.best_price = l
+                    if not t.trailing_active and (t.entry_price - t.best_price) >= t.trailing_activation:
+                        t.trailing_active = True
+                    if t.trailing_active:
+                        new_sl = t.best_price + t.trailing_distance
+                        if new_sl < t.sl:
+                            t.sl = new_sl
+
             hit_sl = hit_tp = False
             if t.side == "long":
                 if l <= t.sl:
@@ -221,7 +353,9 @@ def simulate(
                     exit_px = t.tp * (1 + slippage_pct)
 
             if hit_sl or hit_tp:
-                t.close(i, exit_px, "sl" if hit_sl else "tp")
+                reason = ("trailing_sl" if (hit_sl and t.trailing_active) else
+                          ("sl" if hit_sl else "tp"))
+                t.close(i, exit_px, reason)
                 equity += t.pnl
             else:
                 still_open.append(t)
@@ -237,12 +371,18 @@ def simulate(
         if sig_dir != 0 and sl_px > 0 and len(open_trades) < max_open:
             entry_px = c * (1 + slippage_pct) if sig_dir == 1 else c * (1 - slippage_pct)
 
-            # Kelly sizing
+            # Kelly sizing — floor at 0.5% of equity so low-conf trades
+            # still produce meaningful loss figures (avoids $1 minimum distortion)
             win_rate = sig_conf / 100.0
             kelly    = win_rate - (1 - win_rate) / rr_ratio
             kelly    = max(0.0, min(kelly, 0.5)) * kelly_fraction
             size_usdc = equity * kelly
-            size_usdc = max(size_usdc, 1.0)
+            size_usdc = max(size_usdc, equity * 0.005)  # min 0.5% of equity
+
+            # Trailing stop: compute distances from the bar's ATR value
+            atr_val = float(signals["atr"].iloc[i])
+            t_activation = trailing_activation_atr * atr_val if trailing_activation_atr > 0 and atr_val > 0 else 0.0
+            t_distance   = trailing_distance_atr   * atr_val if trailing_activation_atr > 0 and atr_val > 0 else 0.0
 
             t = Trade(
                 idx=i,
@@ -252,6 +392,8 @@ def simulate(
                 tp=tp_px,
                 size_usdc=size_usdc,
                 fee_pct=fee_pct,
+                trailing_activation=t_activation,
+                trailing_distance=t_distance,
             )
             open_trades.append(t)
             trades.append(t)
@@ -329,8 +471,9 @@ def compute_metrics(trades: list[Trade], equity_curve: pd.Series, initial_equity
         "sharpe_ratio":   sharpe,
         "sortino_ratio":  sortino,
         "calmar_ratio":   calmar,
-        "sl_hits":        sum(1 for t in closed if t.exit_reason == "sl"),
-        "tp_hits":        sum(1 for t in closed if t.exit_reason == "tp"),
+        "sl_hits":            sum(1 for t in closed if t.exit_reason == "sl"),
+        "tp_hits":            sum(1 for t in closed if t.exit_reason == "tp"),
+        "trailing_sl_hits":   sum(1 for t in closed if t.exit_reason == "trailing_sl"),
     }
 
 
@@ -347,7 +490,8 @@ def print_report(metrics: dict, symbol: str, timeframe: str) -> None:
     print(sep)
     print(f"  Total trades:       {metrics['total_trades']}")
     print(f"  Win rate:           {metrics['win_rate']:.1%}")
-    print(f"  TP hits / SL hits:  {metrics['tp_hits']} / {metrics['sl_hits']}")
+    trail_hits = metrics.get("trailing_sl_hits", 0)
+    print(f"  TP / SL / Trail SL: {metrics['tp_hits']} / {metrics['sl_hits']} / {trail_hits}")
     print(f"  Avg win:            ${metrics['avg_win_usdc']:,.2f}")
     print(f"  Avg loss:           ${metrics['avg_loss_usdc']:,.2f}")
     print(f"  Expectancy:         ${metrics['expectancy_usdc']:,.2f}")
@@ -421,17 +565,18 @@ def save_results(
     trade_rows = []
     for t in trades:
         trade_rows.append({
-            "entry_idx":   t.entry_idx,
-            "exit_idx":    t.exit_idx,
-            "side":        t.side,
-            "entry_price": t.entry_price,
-            "exit_price":  t.exit_price,
-            "sl":          t.sl,
-            "tp":          t.tp,
-            "size_usdc":   t.size_usdc,
-            "pnl":         t.pnl,
-            "pnl_pct":     t.pnl_pct,
-            "exit_reason": t.exit_reason,
+            "entry_idx":      t.entry_idx,
+            "exit_idx":       t.exit_idx,
+            "side":           t.side,
+            "entry_price":    t.entry_price,
+            "exit_price":     t.exit_price,
+            "sl":             t.sl,
+            "tp":             t.tp,
+            "size_usdc":      t.size_usdc,
+            "pnl":            t.pnl,
+            "pnl_pct":        t.pnl_pct,
+            "exit_reason":    t.exit_reason,
+            "trailing_active": t.trailing_active,
         })
     pd.DataFrame(trade_rows).to_csv(out_dir / f"{slug}_trades.csv", index=False)
 
@@ -443,7 +588,7 @@ def save_results(
         json.dump({k: (float(v) if isinstance(v, (np.floating, np.integer)) else v)
                    for k, v in metrics.items()}, f, indent=2)
 
-    print(f"\n  Results saved → {out_dir / slug}_*.csv/json")
+    print(f"\n  Results saved -> {out_dir / slug}_*.csv/json")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -455,6 +600,14 @@ async def main(args: argparse.Namespace) -> None:
 
     symbol    = args.symbol or settings.symbols[0]
     timeframe = args.timeframe or settings.primary_timeframe
+
+    # Auto-detect per-symbol model (overrides --model-path default when file exists)
+    if args.model_path == "models/lgbm_classifier.joblib":
+        slug = symbol.lower().replace("-", "_")
+        specific = Path(f"models/lgbm_{slug}_15m.joblib")
+        if specific.exists():
+            args.model_path = str(specific)
+            print(f"  Using per-symbol model: {args.model_path}")
 
     # Load data
     if args.from_csv:
@@ -469,7 +622,7 @@ async def main(args: argparse.Namespace) -> None:
 
     print(f"  Dataset: {len(df)} bars")
 
-    # Generate signals
+    # Generate signals (MTF confluence by default)
     signals = generate_signals(
         df=df,
         warmup=args.warmup,
@@ -478,6 +631,8 @@ async def main(args: argparse.Namespace) -> None:
         atr_sl_mult=args.atr_sl,
         rr_ratio=args.rr,
         model_path=args.model_path,
+        use_mtf=not args.no_mtf,
+        min_agreeing=args.min_agreeing,
     )
 
     n_signals = int((signals["direction"] != 0).sum())
@@ -491,6 +646,8 @@ async def main(args: argparse.Namespace) -> None:
 
     # Simulate
     print("\n  Running simulation ...")
+    if args.trailing_activation_atr > 0:
+        print(f"  Trailing stop: activates at {args.trailing_activation_atr}x ATR, trails {args.trailing_distance_atr}x ATR")
     trades, equity_curve = simulate(
         df=df,
         signals=signals,
@@ -500,11 +657,30 @@ async def main(args: argparse.Namespace) -> None:
         kelly_fraction=args.kelly,
         rr_ratio=args.rr,
         max_open=args.max_open,
+        trailing_activation_atr=args.trailing_activation_atr,
+        trailing_distance_atr=args.trailing_distance_atr,
     )
 
     # Metrics
     metrics = compute_metrics(trades, equity_curve, args.equity)
     print_report(metrics, symbol, timeframe)
+
+    # Optional OOS split report
+    if args.oos_split > 0:
+        oos_start = int(len(df) * (1 - args.oos_split))
+        is_trades  = [t for t in trades if t.exit_idx >= 0 and t.exit_idx < oos_start]
+        oos_trades = [t for t in trades if t.exit_idx >= oos_start]
+        is_curve   = equity_curve.iloc[:oos_start]
+        oos_base   = float(is_curve.iloc[-1]) if not is_curve.empty else args.equity
+        oos_curve  = equity_curve.iloc[oos_start:] - oos_base + args.equity
+
+        print(f"\n  ── In-Sample ({1-args.oos_split:.0%} of data) ──")
+        is_m = compute_metrics(is_trades, is_curve, args.equity)
+        print_report(is_m, symbol + " [IS]", timeframe)
+
+        print(f"  ── Out-of-Sample (last {args.oos_split:.0%} of data) ──")
+        oos_m = compute_metrics(oos_trades, oos_curve, args.equity)
+        print_report(oos_m, symbol + " [OOS]", timeframe)
 
     # Save
     save_results(trades, equity_curve, metrics, symbol, timeframe)
@@ -526,8 +702,8 @@ def parse_args() -> argparse.Namespace:
                    help="Bars to skip at start (indicator warm-up, default: 100)")
     p.add_argument("--window",       type=int,   default=300,
                    help="Rolling window fed into signal engine (default: 300)")
-    p.add_argument("--min-confidence", type=float, default=55.0,
-                   help="Min ensemble confidence to generate a signal (default: 55)")
+    p.add_argument("--min-confidence", type=float, default=25.0,
+                   help="Min ensemble confidence to generate a signal (default: 25)")
     p.add_argument("--atr-sl",       type=float, default=1.5,
                    help="ATR multiplier for stop-loss (default: 1.5)")
     p.add_argument("--rr",           type=float, default=2.0,
@@ -546,6 +722,23 @@ def parse_args() -> argparse.Namespace:
                    help="Max simultaneous open positions (default: 1)")
     p.add_argument("--model-path",   type=str,   default="models/lgbm_classifier.joblib",
                    help="Path to trained LightGBM model (default: models/lgbm_classifier.joblib)")
+
+    # MTF confluence
+    p.add_argument("--no-mtf",       action="store_true", default=False,
+                   help="Disable multi-timeframe confluence (single-TF mode)")
+    p.add_argument("--min-agreeing", type=int,   default=2,
+                   help="Min TFs that must agree for a confluence signal (default: 2)")
+
+    # Trailing stop
+    p.add_argument("--trailing-activation-atr", type=float, default=0.0,
+                   help="Activate trail after N*ATR profit (0 = disabled, default: 0 = off)")
+    p.add_argument("--trailing-distance-atr",   type=float, default=1.5,
+                   help="Trail N*ATR behind best price (default: 1.5)")
+
+    # OOS split
+    p.add_argument("--oos-split", type=float, default=0.0,
+                   help="Fraction of data held out for out-of-sample reporting (0 = disabled, "
+                        "e.g. 0.25 = last 25%% reported separately, default: 0)")
 
     return p.parse_args()
 

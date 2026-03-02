@@ -175,11 +175,24 @@ def bb_squeeze(df: pd.DataFrame, bb_period: int = 20, kc_period: int = 20,
 # ── Volume ────────────────────────────────────────────────────────────────────
 
 def vwap(df: pd.DataFrame) -> pd.Series:
-    """Session VWAP (resets each day for intraday frames)."""
+    """Session VWAP — resets at midnight UTC each day when 'ts' column (ms) is present."""
     typical = (df["high"] + df["low"] + df["close"]) / 3
+    tp_vol  = typical * df["volume"]
+
+    if "ts" in df.columns:
+        # Group by calendar date (UTC) and compute cumulative VWAP per session
+        dates  = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.date
+        result = pd.Series(np.nan, index=df.index, dtype=float)
+        for _, grp in df.groupby(dates, sort=False):
+            idx     = grp.index
+            cum_vol = df.loc[idx, "volume"].cumsum()
+            cum_tp  = tp_vol.loc[idx].cumsum()
+            result.loc[idx] = (cum_tp / cum_vol.replace(0, np.nan)).values
+        return result
+
+    # Fallback: running VWAP (no session reset — no timestamp available)
     cum_vol = df["volume"].cumsum()
-    cum_tp_vol = (typical * df["volume"]).cumsum()
-    return cum_tp_vol / cum_vol.replace(0, np.nan)
+    return tp_vol.cumsum() / cum_vol.replace(0, np.nan)
 
 
 def cvd(df: pd.DataFrame) -> pd.Series:
@@ -251,6 +264,23 @@ def compute_all(df: pd.DataFrame) -> pd.DataFrame:
     out["vwap"] = vwap(df)
     out["cvd"] = cvd(df)
     out["obv"] = obv(df)
+
+    # Volume-derived features (needed by ensemble _volume_score)
+    v = out["vwap"]
+    out["vwap_dist"]      = (df["close"] - v) / df["close"].replace(0, np.nan)
+
+    vol_ma20              = df["volume"].rolling(20, min_periods=1).mean()
+    out["vol_ratio"]      = df["volume"] / vol_ma20.replace(0, np.nan)
+    out["cvd_norm"]       = out["cvd"].diff(1) / vol_ma20.replace(0, np.nan)
+    out["obv_diff"]       = out["obv"].diff(1)
+
+    # VWAP cross: +1 when close crosses above vwap, -1 crosses below, 0 otherwise
+    above_vwap            = (df["close"] >= v).astype(int)
+    out["vwap_cross"]     = (above_vwap - above_vwap.shift(1).fillna(above_vwap)).astype(float)
+
+    # MACD normalised (needed by ensemble _technical_score MACD sub-score)
+    close_std             = df["close"].rolling(20, min_periods=1).std().replace(0, np.nan)
+    out["macd_hist_norm"] = out["macd_hist"] / close_std
 
     # Price features
     out["returns"] = df["close"].pct_change()

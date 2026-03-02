@@ -31,6 +31,7 @@ try:
     from sklearn.preprocessing import LabelEncoder
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import classification_report, accuracy_score
+    from sklearn.utils.class_weight import compute_sample_weight
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -49,19 +50,22 @@ logger = logging.getLogger(__name__)
 # ── Default hyper-parameters ──────────────────────────────────────────────────
 
 DEFAULT_PARAMS = {
-    "objective":        "multiclass",
-    "num_class":        3,
-    "metric":           "multi_logloss",
-    "num_leaves":       63,
-    "learning_rate":    0.05,
-    "feature_fraction": 0.8,
-    "bagging_fraction": 0.8,
-    "bagging_freq":     5,
-    "min_child_samples": 20,
-    "n_estimators":     300,
-    "n_jobs":           -1,
-    "verbosity":        -1,
-    "random_state":     42,
+    "objective":          "multiclass",
+    "num_class":          3,
+    "metric":             "multi_logloss",
+    "num_leaves":         127,          # 63 → 127: more expressive trees
+    "learning_rate":      0.05,
+    "feature_fraction":   0.8,
+    "bagging_fraction":   0.8,
+    "bagging_freq":       5,
+    "min_child_samples":  30,           # 20 → 30: reduce overfit on single bars
+    "n_estimators":       1000,         # 300 → 1000: early stopping decides actual rounds
+    "reg_alpha":          0.1,          # L1 regularisation (new)
+    "reg_lambda":         0.1,          # L2 regularisation (new)
+    "min_gain_to_split":  0.01,         # prune low-information splits (new)
+    "n_jobs":             -1,
+    "verbosity":          -1,
+    "random_state":       42,
 }
 
 # LightGBM encodes classes as 0,1,2 — map back to -1,0,+1
@@ -140,11 +144,15 @@ class DirectionalClassifier:
         X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
         y_train, y_val = y_encoded.iloc[:split_idx], y_encoded.iloc[split_idx:]
 
+        # Balance classes so LONG/SHORT are not drowned out by FLAT majority
+        sample_weights = compute_sample_weight("balanced", y_train)
+
         self.model = lgb.LGBMClassifier(**self.params)
         self.model.fit(
             X_train, y_train,
+            sample_weight=sample_weights,
             eval_set=[(X_val, y_val)],
-            callbacks=[lgb.early_stopping(30, verbose=False),
+            callbacks=[lgb.early_stopping(50, verbose=False),  # 30 → 50
                        lgb.log_evaluation(-1)],
         )
 
@@ -194,10 +202,12 @@ class DirectionalClassifier:
             X_tr, X_vl = X.iloc[train_idx], X.iloc[val_idx]
             y_tr, y_vl = y_encoded.iloc[train_idx], y_encoded.iloc[val_idx]
 
+            sw = compute_sample_weight("balanced", y_tr)
             m = lgb.LGBMClassifier(**self.params)
             m.fit(X_tr, y_tr,
+                  sample_weight=sw,
                   eval_set=[(X_vl, y_vl)],
-                  callbacks=[lgb.early_stopping(20, verbose=False),
+                  callbacks=[lgb.early_stopping(30, verbose=False),  # 20 → 30
                               lgb.log_evaluation(-1)])
             pred = m.predict(X_vl)
             acc  = accuracy_score(y_vl, pred)
@@ -205,10 +215,12 @@ class DirectionalClassifier:
                                   "n_train": len(X_tr), "n_val": len(X_vl)})
             logger.info("Fold %d/%d  val_acc=%.3f", fold + 1, n_splits, acc)
 
-        # Retrain on full data
+        # Retrain on full data with balanced weights
         self.feature_names = list(X.columns)
+        sw_full = compute_sample_weight("balanced", y_encoded)
         self.model = lgb.LGBMClassifier(**self.params)
         self.model.fit(X, y_encoded,
+                       sample_weight=sw_full,
                        callbacks=[lgb.log_evaluation(-1)])
         if self.model_path:
             self.save(self.model_path)

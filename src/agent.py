@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+import time
 
 from src.core.config import get_settings
 from src.core.logging import configure_logging, get_logger
@@ -15,6 +16,7 @@ from src.data.feeds.market_feed import MarketFeedManager
 from src.data.storage.schema import Database
 from src.exchanges.blofin import BloFinAdapter
 from src.execution.paper import PaperEngine
+from src.execution.live import LiveEngine
 from src.decision.core import DecisionEngine, TradeDecision
 from src.monitoring.alerts import get_alerter
 
@@ -30,12 +32,30 @@ class CryptoAgent:
     def __init__(self) -> None:
         self._settings = get_settings()
         self._running = False
+        # Per-symbol SL cooldown: symbol -> unix timestamp of last SL hit
+        # Prevents re-entry for SL_COOLDOWN_SECS after a stop-loss
+        self._sl_cooldown: dict[str, float] = {}
+        self._SL_COOLDOWN_SECS = 600  # 10 minutes
 
         # Core subsystems
         self._exchange = BloFinAdapter()
         self._db = Database()
         self._feed = MarketFeedManager(self._exchange, self._db)
         self._paper = PaperEngine() if self._settings.is_paper else None
+        # Live engine (always instantiated; only executes when mode == 'live')
+        self._live: LiveEngine | None = (
+            LiveEngine(
+                exchange=self._exchange,
+                dry_run=True,                      # change to False to send real orders
+                max_open_positions=self._settings.max_open_positions,
+                max_daily_drawdown_pct=self._settings.max_daily_drawdown_pct,
+                atr_sl_multiplier=self._settings.atr_sl_multiplier,
+                rr_ratio=self._settings.rr_ratio,
+                default_leverage=self._settings.default_leverage,
+            )
+            if not self._settings.is_paper
+            else None
+        )
 
         # Signal engine + decision core
         self._engine = DecisionEngine(
@@ -48,6 +68,7 @@ class CryptoAgent:
             rr_ratio=self._settings.rr_ratio,
             adx_min_threshold=self._settings.adx_min_threshold,
             max_daily_drawdown_pct=self._settings.max_daily_drawdown_pct,
+            max_correlated_positions=getattr(self._settings, "max_correlated_positions", 2),
             portfolio_value_fn=self._get_portfolio_value,
             open_positions_fn=self._get_open_positions,
             on_decision_fn=self._on_trade_decision,
@@ -56,6 +77,11 @@ class CryptoAgent:
 
         # Per-symbol OHLCV buffers fed by the market feed
         self._candle_buffers: dict[str, dict[str, list]] = {}
+
+        # Dead-signal watchdog: timestamp of last closed candle processed
+        self._last_candle_ts: float = time.monotonic()
+        # How long (seconds) before alerting on silence (10 minutes)
+        self._watchdog_threshold: float = 600.0
 
         # Telegram alerter
         self._alerter = get_alerter()
@@ -86,14 +112,35 @@ class CryptoAgent:
         if self._paper and recovered_symbols:
             await self._recalculate_recovered_sl(recovered_symbols)
 
-        # Subscribe private streams (orders & positions)
-        await self._exchange.subscribe_orders(self._on_order_update)
-        await self._exchange.subscribe_positions(self._on_position_update)
+        # Subscribe private streams (orders & positions) — live mode only.
+        # Paper mode: the paper engine handles fills internally; connecting to
+        # BloFin's private WS is unnecessary and causes constant auth failures.
+        if self._settings.is_live:
+            await self._exchange.subscribe_orders(self._on_order_update)
+            await self._exchange.subscribe_positions(self._on_position_update)
 
         # Wire candle callback for signal engine (Phase 2)
         self._feed.on_candle(self._on_candle)
 
-        await self._feed.start()
+        # Start market feed — retry indefinitely with exponential backoff.
+        # 429 rate-limit: wait 300s. Other errors: standard 5-320s backoff.
+        _attempt = 0
+        while True:
+            try:
+                await self._feed.start()
+                break
+            except Exception as exc:
+                is_429 = "429" in str(exc)
+                if is_429:
+                    wait = 300  # BloFin rate limit — give it 5 min to clear
+                else:
+                    wait = min(5 * (2 ** _attempt), 120)
+                logger.warning(
+                    "Market feed start failed, retrying",
+                    attempt=_attempt, error=str(exc), retry_in=wait,
+                )
+                await asyncio.sleep(wait)
+                _attempt += 1
 
         self._running = True
         logger.info("CryptoAgent running", mode=self._settings.mode)
@@ -103,7 +150,10 @@ class CryptoAgent:
             symbols=self._settings.symbols,
         )
 
-        await self._main_loop()
+        # Launch watchdog alongside main loop
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(self._main_loop())
+            tg.create_task(self._watchdog_loop())
 
     async def _recover_paper_positions(self) -> None:
         """
@@ -237,17 +287,24 @@ class CryptoAgent:
         """Fetch recent historical candles so signal engine is warm immediately."""
         import pandas as pd
         lookback = self._settings.lookback_candles  # 500
-        # Pre-load both the LTF trigger (15m) and the HTF trend bias (1H)
-        # so that MTF confluence can fire on the very first live candle,
-        # instead of waiting up to 60 minutes for the first live 1H candle.
-        signal_tfs = ["15m", "1h", "4h"]
+        # Pre-load all signal timeframes so MTF confluence can fire on the very first live candle.
+        # 1m/3m/5m: fast entry triggers | 15m: primary ML entry | 1h: intermediate trend | 4h: bias
+        signal_tfs = ["1m", "3m", "5m", "15m", "1h", "4h"]
+        consecutive_429s = 0
         for symbol in self._settings.symbols:
             for tf in signal_tfs:
+                if consecutive_429s >= 3:
+                    # IP is rate-limited — bail out of preload immediately.
+                    # Buffers will fill naturally as WS candles arrive.
+                    logger.warning("IP rate-limited (429) — skipping remaining preload",
+                                   completed=f"{symbol}/{tf}")
+                    return
                 try:
                     logger.info("Pre-loading candles", symbol=symbol, timeframe=tf, bars=lookback)
                     # BloFin max 300/request — fetch two pages for 500+ bars
                     page1 = await self._exchange.get_candles(symbol, tf, limit=300)
                     candles = list(page1)
+                    consecutive_429s = 0  # reset on success
                     if len(candles) == 300 and lookback > 300:
                         oldest_ts = min(c.timestamp for c in candles)
                         page2 = await self._exchange.get_candles(
@@ -257,10 +314,11 @@ class CryptoAgent:
                     if not candles:
                         logger.warning("No history returned", symbol=symbol, timeframe=tf)
                         continue
-                    # Sort oldest-first
+                    # Sort oldest-first; drop last candle if it is still forming
                     candles.sort(key=lambda c: c.timestamp)
+                    candles = [c for c in candles if getattr(c, "closed", True)]
                     rows = [{"open": c.open, "high": c.high, "low": c.low,
-                             "close": c.close, "volume": c.volume} for c in candles]
+                             "close": c.close, "volume": c.volume, "ts": c.timestamp} for c in candles]
                     if symbol not in self._candle_buffers:
                         self._candle_buffers[symbol] = {}
                     self._candle_buffers[symbol][tf] = rows[-lookback:]
@@ -286,6 +344,8 @@ class CryptoAgent:
                 except Exception as exc:
                     logger.warning("Failed to pre-load history", symbol=symbol,
                                    timeframe=tf, error=str(exc))
+                    if "429" in str(exc):
+                        consecutive_429s += 1
 
     async def stop(self) -> None:
         logger.info("CryptoAgent shutting down...")
@@ -307,6 +367,35 @@ class CryptoAgent:
         logger.info("CryptoAgent stopped cleanly")
 
     # ── Main Loop ─────────────────────────────────────────────────────────────
+
+    async def _watchdog_loop(self) -> None:
+        """
+        Alert via Telegram if no closed candles are received for >10 minutes.
+        Runs every 60 seconds. Resets after each alert to avoid spam (re-alerts
+        after another full threshold period of silence).
+        """
+        check_interval = 60.0   # check every minute
+        alerted_at: float = 0.0
+
+        while self._running:
+            await asyncio.sleep(check_interval)
+            silent_secs = time.monotonic() - self._last_candle_ts
+            if silent_secs >= self._watchdog_threshold:
+                # Only alert once per silence period (suppress repeat alerts)
+                if time.monotonic() - alerted_at >= self._watchdog_threshold:
+                    minutes = silent_secs / 60.0
+                    logger.warning(
+                        "Dead signal watchdog: no closed candles for %.1f min — sending alert",
+                        minutes,
+                    )
+                    try:
+                        await self._alerter.dead_signal_alert(
+                            minutes_silent=minutes,
+                            symbols=self._settings.symbols,
+                        )
+                    except Exception as exc:
+                        logger.debug("Watchdog alert failed: %s", exc)
+                    alerted_at = time.monotonic()
 
     async def _main_loop(self) -> None:
         heartbeat = self._settings.heartbeat_interval
@@ -372,14 +461,26 @@ class CryptoAgent:
     # ── Event Handlers ────────────────────────────────────────────────────────
 
     async def _on_candle(self, candle) -> None:
-        """Called on every new closed candle from the market feed."""
+        """Called on every candle update from the market feed."""
         symbol    = candle.symbol
         timeframe = candle.timeframe if hasattr(candle, "timeframe") else self._settings.primary_timeframe
 
-        # Update paper engine mark price, then drain any SL/TP-triggered closes
+        # Always update paper engine mark price on every tick (including forming candles)
+        # so SL/TP triggers fire promptly at the correct price.
         if self._settings.is_paper and self._paper:
             self._paper.update_price(symbol, candle.close)
-            for close_evt in self._paper.drain_pending_closes():
+            pending_closes = self._paper.drain_pending_closes()
+            # Set SL cooldowns synchronously BEFORE any awaits so that concurrent
+            # candle-processing tasks cannot bypass the guard (asyncio race condition fix).
+            for evt in pending_closes:
+                if evt.get("close_reason") == "stop_loss":
+                    self._sl_cooldown[evt["symbol"]] = time.time()
+                    logger.info(
+                        "SL cooldown set",
+                        symbol=evt["symbol"],
+                        cooldown_secs=self._SL_COOLDOWN_SECS,
+                    )
+            for close_evt in pending_closes:
                 try:
                     await self._db.log_paper_trade(close_evt)
                     await self._alerter.trade_closed(
@@ -392,6 +493,17 @@ class CryptoAgent:
                     )
                 except Exception as exc:
                     logger.warning("Failed to record paper trade close", error=str(exc))
+
+        # Only append CONFIRMED (closed) candles to the signal buffer.
+        # Update watchdog timestamp whenever a confirmed candle arrives.
+        # Forming candles flood the buffer (BTC sends 100s of updates/sec for the
+        # live 4h candle), pushing out historical rows and corrupting indicator
+        # computations (ADX→NaN, LGBM features NaN→(0,0%)).
+        if not getattr(candle, "closed", True):
+            return
+
+        # Reset watchdog — we have a live confirmed candle
+        self._last_candle_ts = time.monotonic()
 
         # Maintain rolling OHLCV buffer for signal engine
         if symbol not in self._candle_buffers:
@@ -406,6 +518,7 @@ class CryptoAgent:
             "low":    candle.low,
             "close":  candle.close,
             "volume": candle.volume,
+            "ts":     candle.timestamp,
         })
 
         # Keep last 500 candles in memory
@@ -431,20 +544,80 @@ class CryptoAgent:
             reason=decision.reason,
         )
 
+        if self._settings.is_paper and self._paper:
+            # ── Guard 1: SL cooldown — block re-entry for 10 min after SL hit ──
+            last_sl = self._sl_cooldown.get(decision.symbol, 0.0)
+            remaining = self._SL_COOLDOWN_SECS - (time.time() - last_sl)
+            if remaining > 0:
+                logger.warning(
+                    "Trade blocked by SL cooldown",
+                    symbol=decision.symbol,
+                    cooldown_remaining_s=round(remaining),
+                )
+                return
+
+            # ── Guard 2: Adjust SL/TP to live price; reject if price past SL ──
+            from src.exchanges.base import OrderSide, OrderType
+            live_price = self._paper._prices.get(decision.symbol, decision.entry_price)
+            sl_dist = abs(decision.stop_loss - decision.entry_price)
+            tp_dist = abs(decision.take_profit - decision.entry_price)
+
+            if decision.side == "short":
+                sl_price = live_price + sl_dist
+                tp_price = live_price - tp_dist
+                if live_price >= sl_price:
+                    logger.warning(
+                        "Trade rejected: live price already at/past SL",
+                        symbol=decision.symbol, side="short",
+                        live=live_price, sl=sl_price,
+                    )
+                    return
+            else:
+                sl_price = live_price - sl_dist
+                tp_price = live_price + tp_dist
+                if live_price <= sl_price:
+                    logger.warning(
+                        "Trade rejected: live price already at/past SL",
+                        symbol=decision.symbol, side="long",
+                        live=live_price, sl=sl_price,
+                    )
+                    return
+
+            if abs(live_price - decision.entry_price) / max(decision.entry_price, 1) > 0.001:
+                logger.info(
+                    "Entry price adjusted to live price",
+                    symbol=decision.symbol,
+                    old_entry=decision.entry_price,
+                    live_price=live_price,
+                    new_sl=round(sl_price, 6),
+                    new_tp=round(tp_price, 6),
+                )
+
         # Fire Telegram alert for every trade decision
         await self._alerter.trade_opened(decision)
 
         if self._settings.is_paper and self._paper:
-            from src.exchanges.base import OrderSide, OrderType
+            # Compute trailing stop distances in price units from ATR approximation
+            settings = self._settings
+            if settings.trailing_stop_activation_atr > 0 and settings.atr_sl_multiplier > 0:
+                atr_approx = sl_dist / settings.atr_sl_multiplier
+                trailing_activation = settings.trailing_stop_activation_atr * atr_approx
+                trailing_distance = settings.trailing_stop_distance_atr * atr_approx
+            else:
+                trailing_activation = 0.0
+                trailing_distance = 0.0
+
             side = OrderSide.BUY if decision.side == "long" else OrderSide.SELL
             order = self._paper.place_order(
                 symbol=decision.symbol,
                 side=side,
                 order_type=OrderType.MARKET,
-                size=decision.size_usdc / decision.entry_price,
-                price=decision.entry_price,
-                sl_price=decision.stop_loss,
-                tp_price=decision.take_profit,
+                size=decision.size_usdc / live_price,
+                price=live_price,
+                sl_price=round(sl_price, 6),
+                tp_price=round(tp_price, 6),
+                trailing_activation=trailing_activation,
+                trailing_distance=trailing_distance,
             )
             if order:
                 logger.info(
@@ -459,6 +632,29 @@ class CryptoAgent:
                     await self._db.upsert_order(order)
                 except Exception as exc:
                     logger.warning("Failed to persist paper order to DB", error=str(exc))
+                await self._db.log_signal(
+                    symbol=decision.symbol,
+                    timeframe=decision.timeframe,
+                    direction=decision.side,
+                    confidence=decision.confidence,
+                    data=decision.signal_breakdown,
+                )
+
+        elif not self._settings.is_paper and self._live:
+            order = await self._live.execute(decision)
+            if order:
+                logger.info(
+                    "Live order submitted",
+                    order_id=order.order_id,
+                    symbol=order.symbol,
+                    side=order.side.value,
+                    size=order.size,
+                    dry_run=self._live.is_dry_run,
+                )
+                try:
+                    await self._db.upsert_order(order)
+                except Exception as exc:
+                    logger.warning("Failed to persist live order to DB", error=str(exc))
                 await self._db.log_signal(
                     symbol=decision.symbol,
                     timeframe=decision.timeframe,
@@ -488,6 +684,27 @@ class CryptoAgent:
 
 async def main() -> None:
     configure_logging()
+
+    # Kill any previously running agent instance, then write our PID.
+    # This prevents zombie agent accumulation when the process is restarted
+    # without a clean shutdown (e.g. terminal killed, system restart).
+    import os
+    import subprocess
+    from pathlib import Path as _Path
+    _pid_file = _Path(__file__).parent.parent / "agent.pid"
+    if _pid_file.exists():
+        try:
+            _old_pid = int(_pid_file.read_text().strip())
+            if _old_pid != os.getpid():
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(_old_pid)],
+                    capture_output=True, timeout=5,
+                )
+                await asyncio.sleep(1)
+        except Exception:
+            pass
+    _pid_file.write_text(str(os.getpid()))
+
     agent = CryptoAgent()
 
     loop = asyncio.get_event_loop()
@@ -507,6 +724,11 @@ async def main() -> None:
         await agent.start()
     except KeyboardInterrupt:
         await agent.stop()
+    finally:
+        try:
+            _pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

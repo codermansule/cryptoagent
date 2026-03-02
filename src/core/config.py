@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,6 +21,9 @@ CONFIG_DIR = ROOT / "config"
 MODELS_DIR = ROOT / "models"
 LOGS_DIR = ROOT / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
+
+# Load .env into os.environ so os.environ.get() works everywhere
+load_dotenv(ROOT / ".env", override=False)
 
 
 # ── Pydantic Settings (reads from .env) ───────────────────────────────────────
@@ -124,6 +128,8 @@ class Settings:
         self.atr_sl_multiplier: float = _r.get("atr_sl_multiplier", 2.5)
         self.rr_ratio: float = _r.get("rr_ratio", 2.0)
         self.adx_min_threshold: float = _r.get("adx_min_threshold", 25.0)
+        self.trailing_stop_activation_atr: float = _r.get("trailing_stop_activation_atr", 0.0)
+        self.trailing_stop_distance_atr: float = _r.get("trailing_stop_distance_atr", 1.5)
 
         # Execution
         _e = raw["execution"]
@@ -139,6 +145,25 @@ class Settings:
         self.paper_starting_balance: float = _p["starting_balance"]
         self.paper_fee_pct: float = _p["simulated_fee_pct"]
         self.paper_slippage_pct: float = _p["simulated_slippage_pct"]
+
+        # Ensemble source weights (from settings.yaml ensemble_weights section)
+        _ew = raw.get("ensemble_weights", {})
+        self.ensemble_weights: dict = {
+            "technical": float(_ew.get("technical", 0.30)),
+            "structure": float(_ew.get("structure", 0.25)),
+            "ml":        float(_ew.get("ml",        0.25)),
+            "volume":    float(_ew.get("volume",    0.10)),
+            "sentiment": float(_ew.get("sentiment", 0.05)),
+            "onchain":   float(_ew.get("onchain",   0.05)),
+        }
+
+        # Per-symbol parameter overrides (from settings.yaml symbol_overrides section)
+        # Keys per symbol: min_confidence_threshold, atr_sl_multiplier, rr_ratio
+        self.symbol_overrides: dict[str, dict] = {
+            sym: dict(cfg)
+            for sym, cfg in (raw.get("symbol_overrides", {}) or {}).items()
+            if isinstance(cfg, dict)
+        }
 
         # Exchange endpoints
         self.exchange_config: dict = exc

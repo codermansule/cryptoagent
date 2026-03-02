@@ -100,10 +100,17 @@ class BloFinAdapter(BaseExchange):
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     async def connect(self) -> None:
+        # Use ThreadedResolver so aiohttp falls back to the OS socket resolver
+        # instead of aiodns/pycares, which fails on Windows ("Could not contact
+        # DNS servers") even when the system DNS is working.
+        resolver = aiohttp.ThreadedResolver()
+        connector = aiohttp.TCPConnector(resolver=resolver)
         self._session = aiohttp.ClientSession(
-            headers={"Content-Type": "application/json"}
+            connector=connector,
+            headers={"Content-Type": "application/json"},
         )
-        self._ws_conn = aiohttp.ClientSession()
+        ws_connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+        self._ws_conn = aiohttp.ClientSession(connector=ws_connector)
         logger.info("BloFin adapter connected", testnet=self._testnet)
 
     async def disconnect(self) -> None:
@@ -487,13 +494,20 @@ class BloFinAdapter(BaseExchange):
     async def _ensure_public_ws(self) -> tuple[aiohttp.ClientWebSocketResponse, bool]:
         """Returns (ws, is_new). is_new=True means the connection was just created."""
         if self._ws_public is None or self._ws_public.closed:
-            self._ws_public = await self._ws_conn.ws_connect(self._ws_public_url)
+            # heartbeat=20 sends WS protocol-level PING frames every 20s to keep
+            # the connection alive without triggering BloFin's application-level
+            # ping rejection (error 60012).
+            self._ws_public = await self._ws_conn.ws_connect(
+                self._ws_public_url, heartbeat=20
+            )
             return self._ws_public, True
         return self._ws_public, False
 
     async def _ensure_private_ws(self) -> aiohttp.ClientWebSocketResponse:
         if self._ws_private is None or self._ws_private.closed:
-            self._ws_private = await self._ws_conn.ws_connect(self._ws_private_url)
+            self._ws_private = await self._ws_conn.ws_connect(
+                self._ws_private_url, heartbeat=20
+            )
             await self._ws_auth(self._ws_private)
         return self._ws_private
 
@@ -613,9 +627,11 @@ class BloFinAdapter(BaseExchange):
 
     async def _public_listener_loop(self) -> None:
         """Single shared listener for ALL public WebSocket channels."""
+        reconnect_delay = 3
         while True:
             try:
                 ws, is_new = await self._ensure_public_ws()
+                reconnect_delay = 3   # reset on successful connect
                 # Only batch re-subscribe when the connection was freshly created
                 # (i.e. a reconnect). On first start the individual subscribe_*
                 # calls have already sent their own subscribe messages.
@@ -629,6 +645,8 @@ class BloFinAdapter(BaseExchange):
                         if data.get("op") == "ping" or data.get("event") == "ping":
                             await self._ws_send(ws, {"op": "pong"})
                             continue
+                        if data.get("event") == "pong":
+                            continue   # our own keepalive response
                         await self._dispatch_public(data)
                     elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
                         logger.warning("Public WS closed, reconnecting")
@@ -639,31 +657,45 @@ class BloFinAdapter(BaseExchange):
             except asyncio.CancelledError:
                 break
             except Exception as exc:
+                is_rate_limit = "429" in str(exc)
+                # 429 = BloFin rate-limiting our IP — back off longer to let it clear
+                max_delay = 300 if is_rate_limit else 60
                 logger.warning(
                     "Public WS error, reconnecting",
                     error=str(exc),
                     exc_type=type(exc).__name__,
-                    ws_closed=self._ws_public.closed if self._ws_public else True,
-                    ws_close_code=self._ws_public.close_code if self._ws_public else None,
+                    retry_in=reconnect_delay,
                 )
                 self._ws_public = None
-                await asyncio.sleep(3)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_delay)
 
     async def _private_listener(self) -> None:
         """Persistent listener for private WebSocket messages."""
+        reconnect_delay = 5
         while True:
             try:
                 ws = await self._ensure_private_ws()
+                reconnect_delay = 5   # reset on successful connect + auth
                 async for msg in ws:
-                    if msg.type != aiohttp.WSMsgType.TEXT:
-                        continue
-                    data = json.loads(msg.data)
-                    await self._dispatch_private(data)
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        if data.get("event") == "pong":
+                            continue
+                        await self._dispatch_private(data)
+                    elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                        self._ws_private = None
+                        break
+                    elif msg.type == aiohttp.WSMsgType.PING:
+                        await ws.pong(msg.data)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.warning("Private WS error, reconnecting", error=str(exc))
-                await asyncio.sleep(2)
+                logger.warning("Private WS error, reconnecting",
+                               error=str(exc), retry_in=reconnect_delay)
+                self._ws_private = None
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 120)   # cap at 2 min
 
     async def _dispatch_public(self, data: dict) -> None:
         # Log any error events from BloFin for diagnostics

@@ -49,7 +49,7 @@ class EnsembleSignal:
     @property
     def is_actionable(self) -> bool:
         """True if confidence exceeds the minimum threshold."""
-        return abs(self.direction) == 1 and self.confidence >= 55.0
+        return abs(self.direction) == 1 and self.confidence >= 25.0
 
 
 # ── Per-source signal computers ───────────────────────────────────────────────
@@ -62,10 +62,15 @@ def _technical_score(ind: pd.DataFrame) -> tuple[float, dict]:
     row = ind.iloc[-1]
     scores = {}
 
+    # ADX — read early to determine trend vs ranging regime
+    adx_val    = float(row.get("adx", 20))
+    adx_mult   = min(adx_val / 40.0, 1.0)   # 0→0.0, 40+→1.0
+    is_trending = adx_val > 35               # strong trend: oscillators = continuation
+
     # EMA cross: +1 bull cross, -1 bear cross, else trend bias
     ema_score = float(row.get("ema_cross", 0))
     if ema_score == 0:
-        # Bias from EMA alignment
+        # Bias from EMA alignment — stronger signal in trending markets
         ema9, ema21, ema50, ema200 = (
             row.get("ema9", np.nan), row.get("ema21", np.nan),
             row.get("ema50", np.nan), row.get("ema200", np.nan),
@@ -73,27 +78,41 @@ def _technical_score(ind: pd.DataFrame) -> tuple[float, dict]:
         close = float(ind["close"].iloc[-1]) if "close" in ind else np.nan
         if not np.isnan(close) and not np.isnan(ema200):
             if close > ema50 > ema200:
-                ema_score = 0.4
+                ema_score = 0.6 if is_trending else 0.4
             elif close < ema50 < ema200:
-                ema_score = -0.4
+                ema_score = -0.6 if is_trending else -0.4
     scores["ema"] = ema_score
 
     # Supertrend direction
     st_dir = float(row.get("supertrend_dir", 0))
     scores["supertrend"] = np.clip(st_dir, -1, 1)
 
-    # RSI — overbought/oversold + mid-zone bias
+    # RSI — trend-aware
+    # Ranging market:  overbought(>70) = mean-revert short;  oversold(<30) = mean-revert long
+    # Trending market: overbought(>70) = continuation long;  oversold(<30) = continuation short
     rsi = float(row.get("rsi14", 50))
-    if rsi > 70:
-        rsi_score = -0.5   # overbought → lean short
-    elif rsi < 30:
-        rsi_score = 0.5    # oversold → lean long
-    elif rsi > 55:
-        rsi_score = 0.3
-    elif rsi < 45:
-        rsi_score = -0.3
+    if is_trending:
+        if rsi > 70:
+            rsi_score = 0.3    # riding upper RSI = bullish continuation
+        elif rsi < 30:
+            rsi_score = -0.3   # riding lower RSI = bearish continuation
+        elif rsi > 55:
+            rsi_score = 0.3
+        elif rsi < 45:
+            rsi_score = -0.3
+        else:
+            rsi_score = 0.0
     else:
-        rsi_score = 0.0
+        if rsi > 70:
+            rsi_score = -0.5   # overbought → lean short
+        elif rsi < 30:
+            rsi_score = 0.5    # oversold → lean long
+        elif rsi > 55:
+            rsi_score = 0.3
+        elif rsi < 45:
+            rsi_score = -0.3
+        else:
+            rsi_score = 0.0
     scores["rsi"] = rsi_score
 
     # MACD histogram direction
@@ -101,35 +120,51 @@ def _technical_score(ind: pd.DataFrame) -> tuple[float, dict]:
     hist_norm = float(row.get("macd_hist_norm", 0)) if not np.isnan(row.get("macd_hist_norm", np.nan)) else 0
     scores["macd"] = np.clip(np.sign(hist) * min(abs(hist_norm) * 2, 1.0), -1, 1)
 
-    # StochRSI — oversold/overbought
+    # StochRSI — trend-aware
+    # Ranging: extremes(<20/>80) = reversal signal
+    # Trending: extremes are normal; just use K vs D crossover direction
     k = float(row.get("srsi_k", 50))
     d = float(row.get("srsi_d", 50))
-    if k < 20 and d < 20:
-        scores["stochrsi"] = 0.5
-    elif k > 80 and d > 80:
-        scores["stochrsi"] = -0.5
-    elif k > d:
-        scores["stochrsi"] = 0.2
-    elif k < d:
-        scores["stochrsi"] = -0.2
+    if is_trending:
+        if k > d:
+            scores["stochrsi"] = 0.3
+        elif k < d:
+            scores["stochrsi"] = -0.3
+        else:
+            scores["stochrsi"] = 0.0
     else:
-        scores["stochrsi"] = 0.0
+        if k < 20 and d < 20:
+            scores["stochrsi"] = 0.5
+        elif k > 80 and d > 80:
+            scores["stochrsi"] = -0.5
+        elif k > d:
+            scores["stochrsi"] = 0.2
+        elif k < d:
+            scores["stochrsi"] = -0.2
+        else:
+            scores["stochrsi"] = 0.0
 
-    # Bollinger Band position
+    # Bollinger Band — trend-aware
+    # Ranging: near upper/lower band = mean-reversion
+    # Trending: riding upper band = bullish continuation; lower band = bearish continuation
     pct_b = float(row.get("bb_pct_b", 0.5))
     if not np.isnan(pct_b):
-        if pct_b > 0.9:
-            scores["bb"] = -0.4
-        elif pct_b < 0.1:
-            scores["bb"] = 0.4
+        if is_trending:
+            if pct_b > 0.8:
+                scores["bb"] = 0.3    # riding upper band in trend = continuation
+            elif pct_b < 0.2:
+                scores["bb"] = -0.3   # riding lower band in trend = continuation
+            else:
+                scores["bb"] = 0.0
         else:
-            scores["bb"] = 0.0
+            if pct_b > 0.9:
+                scores["bb"] = -0.4
+            elif pct_b < 0.1:
+                scores["bb"] = 0.4
+            else:
+                scores["bb"] = 0.0
     else:
         scores["bb"] = 0.0
-
-    # ADX — amplify signal in trending markets
-    adx_val = float(row.get("adx", 20))
-    adx_mult = min(adx_val / 40.0, 1.0)   # 0→0.0, 40+→1.0
 
     weights = {"ema": 0.25, "supertrend": 0.25, "rsi": 0.15,
                "macd": 0.20, "stochrsi": 0.10, "bb": 0.05}
@@ -189,15 +224,20 @@ def _structure_score(ms: MarketStructure) -> tuple[float, dict]:
 
 
 def _volume_score(ind: pd.DataFrame) -> tuple[float, dict]:
-    """
-    Compute directional score from volume-based indicators.
-    """
+    """Compute directional score from volume-based indicators."""
     row = ind.iloc[-1]
     scores = {}
 
-    # VWAP position
+    # VWAP position: how far above/below VWAP (continuous)
     vwap_dist = float(row.get("vwap_dist", 0)) if not np.isnan(row.get("vwap_dist", np.nan)) else 0
     scores["vwap"] = np.clip(np.sign(vwap_dist) * min(abs(vwap_dist) * 20, 1.0), -1, 1)
+
+    # VWAP anchor cross: fires on the bar price crosses VWAP, volume-gated
+    vol_ratio  = float(row.get("vol_ratio", 1.0)) if not np.isnan(row.get("vol_ratio", np.nan)) else 1.0
+    cross_raw  = float(row.get("vwap_cross", 0))  if not np.isnan(row.get("vwap_cross", np.nan)) else 0
+    # Only count cross when volume is at least 0.8× average; scale strength by vol
+    vol_gate   = max(0.0, (vol_ratio - 0.8) / 0.7)   # 0 at 0.8×, 1.0 at 1.5×, capped below
+    scores["vwap_cross"] = float(np.clip(cross_raw * min(vol_gate, 1.5), -1, 1))
 
     # CVD direction (recent delta)
     cvd_norm = float(row.get("cvd_norm", 0)) if not np.isnan(row.get("cvd_norm", np.nan)) else 0
@@ -207,11 +247,10 @@ def _volume_score(ind: pd.DataFrame) -> tuple[float, dict]:
     obv_diff = float(row.get("obv_diff", 0)) if not np.isnan(row.get("obv_diff", np.nan)) else 0
     scores["obv"] = np.clip(np.sign(obv_diff), -1, 1)
 
-    # Volume ratio (high volume confirms signals)
-    vol_ratio = float(row.get("vol_ratio", 1.0)) if not np.isnan(row.get("vol_ratio", np.nan)) else 1.0
-    vol_mult  = min(vol_ratio / 1.5, 1.5)
+    # Volume multiplier (high volume amplifies all sub-scores)
+    vol_mult = min(vol_ratio / 1.5, 1.5)
 
-    weights = {"vwap": 0.35, "cvd": 0.40, "obv": 0.25}
+    weights = {"vwap": 0.20, "vwap_cross": 0.20, "cvd": 0.35, "obv": 0.25}
     net = sum(scores[k] * weights[k] for k in scores) * vol_mult
 
     return float(np.clip(net, -1, 1)), scores
@@ -220,27 +259,35 @@ def _volume_score(ind: pd.DataFrame) -> tuple[float, dict]:
 def _sentiment_score(sentiment_data: dict) -> tuple[float, dict]:
     """
     Compute directional score from sentiment data.
+    Weights are normalized to active sources so the score always uses the full [-1, +1] range.
     Returns (net_score, breakdown) in [-1, +1].
     """
-    scores = {}
-    
+    base_weights = {"fear_greed": 0.35, "news": 0.25, "twitter": 0.20, "reddit": 0.20}
+    scores: dict = {}
+
     fear_greed = sentiment_data.get("fear_greed", 50)
     if fear_greed:
         fg_norm = fear_greed / 100.0
         scores["fear_greed"] = (fg_norm - 0.5) * 2
-    
+
     news_sent = sentiment_data.get("news_sentiment", 0)
-    scores["news"] = news_sent
-    
+    scores["news"] = float(news_sent)
+
     twitter_sent = sentiment_data.get("twitter_sentiment", 0)
-    scores["twitter"] = twitter_sent
-    
+    if twitter_sent:
+        scores["twitter"] = float(twitter_sent)
+
     reddit_sent = sentiment_data.get("reddit_sentiment", 0)
-    scores["reddit"] = reddit_sent
-    
-    weights = {"fear_greed": 0.35, "news": 0.25, "twitter": 0.20, "reddit": 0.20}
-    net = sum(scores.get(k, 0) * weights[k] for k in weights)
-    
+    if reddit_sent:
+        scores["reddit"] = float(reddit_sent)
+
+    # Normalize to active sources — avoids 0.60 ceiling when twitter/reddit are absent
+    active_w = sum(base_weights[k] for k in scores if k in base_weights)
+    if active_w > 0:
+        net = sum(scores[k] * base_weights[k] / active_w for k in scores if k in base_weights)
+    else:
+        net = 0.0
+
     return float(np.clip(net, -1, 1)), scores
 
 
@@ -285,6 +332,7 @@ def compute_ensemble(
     weights: Optional[dict] = None,
     sentiment_data: Optional[dict] = None,
     onchain_data: Optional[dict] = None,
+    indicators: Optional[pd.DataFrame] = None,
 ) -> EnsembleSignal:
     """
     Compute the ensemble signal for a symbol/timeframe.
@@ -306,17 +354,31 @@ def compute_ensemble(
     if len(df) < 50:
         return EnsembleSignal(symbol, timeframe, 0, 0.0)
 
-    # Default source weights (expanded to include sentiment & on-chain)
-    w = weights or {
-        "technical": 0.25,
-        "structure":  0.20,
-        "ml":         0.25,
-        "volume":     0.10,
-        "sentiment":  0.10,
-        "onchain":    0.10,
-    }
+    # Use weights from settings.yaml (ensemble_weights section) when not overridden
+    if weights is None:
+        try:
+            from src.core.config import get_settings
+            _ew = get_settings().ensemble_weights
+            weights = {
+                "technical": _ew.get("technical", 0.30),
+                "structure": _ew.get("structure", 0.25),
+                "ml":        _ew.get("ml",        0.30),
+                "volume":    _ew.get("volume",    0.10),
+                "sentiment": _ew.get("sentiment", 0.05),
+                "onchain":   _ew.get("onchain",   0.05),
+            }
+        except Exception:
+            weights = {
+                "technical": 0.30,
+                "structure": 0.25,
+                "ml":        0.30,
+                "volume":    0.10,
+                "sentiment": 0.05,
+                "onchain":   0.05,
+            }
+    w = weights
 
-    ind = compute_all(df)
+    ind = indicators if indicators is not None else compute_all(df)
 
     # ── Technical score
     tech_net, tech_breakdown = _technical_score(ind)
@@ -343,14 +405,17 @@ def compute_ensemble(
     else:
         onchain_net, onchain_breakdown = 0.0, {}
 
-    # ── Weighted combination
+    # ── Weighted combination (sanitise NaN from any indicator)
+    def _safe(v: float) -> float:
+        return 0.0 if (v != v or v is None) else float(v)   # NaN check via v!=v
+
     raw_score = (
-        tech_net     * w["technical"] +
-        struct_net   * w["structure"] +
-        ml_net       * w["ml"] +
-        vol_net      * w["volume"] +
-        sent_net     * w["sentiment"] +
-        onchain_net  * w["onchain"]
+        _safe(tech_net)    * w["technical"] +
+        _safe(struct_net)  * w["structure"] +
+        _safe(ml_net)      * w["ml"] +
+        _safe(vol_net)     * w["volume"] +
+        _safe(sent_net)    * w["sentiment"] +
+        _safe(onchain_net) * w["onchain"]
     )
 
     # ── Regime adjustment
@@ -363,7 +428,11 @@ def compute_ensemble(
         fg = sentiment_data["fear_greed"]
         if fg < 25 or fg > 75:
             conf_boost += 5
-    
+
+    # Strong NLP news sentiment reinforces conviction
+    if sentiment_data and abs(float(sentiment_data.get("news_sentiment", 0))) > 0.4:
+        conf_boost += 5
+
     if onchain_data and onchain_data.get("liq_extreme"):
         conf_boost += 5
 
@@ -371,10 +440,11 @@ def compute_ensemble(
     confidence = abs(raw_score) * 100.0 + conf_boost
     confidence = float(np.clip(confidence, 0.0, 100.0))
 
-    # Direction: sign of raw_score — must exceed ±0.05 to avoid noise signals
-    if raw_score > 0.05:
+    # Direction: sign of raw_score — must exceed ±0.02 to commit to a direction.
+    # (0.05 was too wide — with ML flat, the technical+structure score rarely reached it)
+    if raw_score > 0.02:
         direction = 1
-    elif raw_score < -0.05:
+    elif raw_score < -0.02:
         direction = -1
     else:
         direction = 0

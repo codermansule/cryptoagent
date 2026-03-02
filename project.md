@@ -2,188 +2,229 @@
 
 ## Vision
 
-Build a high-accuracy, AI-driven autonomous trading agent capable of live trading in **crypto spot**, **crypto perpetual futures**, and **traditional futures** markets. The agent connects natively to exchanges such as **BloFin** and is designed around maximizing prediction accuracy while managing risk with surgical precision.
-
----
-
-## Core Objectives
-
-- **Maximum Prediction Accuracy** — Ensemble ML/AI models informed by multi-source market data
-- **Live Execution** — Real-time order placement, modification, and cancellation via exchange APIs
-- **Risk-First Architecture** — No trade executes without passing a multi-layer risk gate
-- **Exchange Agnostic Core** — BloFin as primary, designed to plug in other exchanges (Binance, Bybit, OKX, etc.)
-- **Full Observability** — Every signal, decision, and execution is logged and auditable
+Build a high-accuracy, AI-driven autonomous trading agent capable of live trading in **crypto spot**, **crypto perpetual futures**, and **traditional futures** markets. The agent connects natively to **BloFin** and is designed around maximizing prediction accuracy while managing risk with surgical precision.
 
 ---
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        CryptoAgent                          │
-│                                                             │
-│  ┌──────────────┐   ┌──────────────┐   ┌────────────────┐  │
-│  │  Data Layer  │──▶│ Signal Engine│──▶│ Decision Core  │  │
-│  └──────────────┘   └──────────────┘   └────────────────┘  │
-│          │                                      │           │
-│  ┌──────────────┐                    ┌────────────────────┐ │
-│  │  Market Feed │                    │   Risk Manager     │ │
-│  └──────────────┘                    └────────────────────┘ │
-│                                               │             │
-│                                    ┌────────────────────┐   │
-│                                    │  Execution Engine  │   │
-│                                    └────────────────────┘   │
-│                                               │             │
-│                                    ┌────────────────────┐   │
-│                                    │  Exchange Adapters │   │
-│                                    │  (BloFin, Binance) │   │
-│                                    └────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                            CryptoAgent                              │
+│                                                                     │
+│  ┌─────────────────┐   ┌──────────────────┐   ┌─────────────────┐  │
+│  │   Data Layer    │──▶│  Signal Engine   │──▶│ Decision Core   │  │
+│  │  market_feed    │   │  technical +     │   │ confluence +    │  │
+│  │  sentiment_feed │   │  LightGBM +      │   │ regime +        │  │
+│  │  TimescaleDB    │   │  LSTM (blended)  │   │ risk filters    │  │
+│  │  Redis cache    │   └──────────────────┘   └─────────────────┘  │
+│  └─────────────────┘                                  │            │
+│                                            ┌──────────────────────┐ │
+│                                            │   Risk Manager       │ │
+│                                            │  Kelly sizing        │ │
+│                                            │  ADX trend filter    │ │
+│                                            │  correlation guard   │ │
+│                                            │  drawdown breaker    │ │
+│                                            └──────────────────────┘ │
+│                                                       │            │
+│                                            ┌──────────────────────┐ │
+│                                            │  Execution Engine    │ │
+│                                            │  Paper (default)     │ │
+│                                            │  Live (dry_run=True) │ │
+│                                            └──────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Current Status — Mar 03 2026
+
+| Component | Status |
+|---|---|
+| Agent (paper mode) | ✅ Running — PID 44640 — 10 symbols × 6 timeframes = 60 live feeds |
+| Signal engine | ✅ All 10 symbols × 6 TFs (1m/3m/5m/15m/1h/4h) |
+| ML models | ✅ 40 LGBM (75 features, n=1000) + 10 LSTM (all 10 symbols, 15m) |
+| Per-symbol thresholds | ✅ Grid-search optimized (BTC=25, ETH=40, SOL=30, XRP=55, DOGE=25 ...) |
+| Dashboard | ✅ http://localhost:8501 — TradingView charts, live P&L, 6 tabs |
+| Watchdog | ✅ Auto-restarts agent + dashboard if either dies |
+| Portfolio | $10,000 paper — fresh start (25 closed trades in DB from prior runs) |
+
+---
+
+## Trading Universe — ALL 10 BloFin USDC Pairs
+
+| Symbol | Min Conf | ATR SL | Notes |
+|---|---|---|---|
+| BTC-USDC | 25% | 2.0× | Core pair |
+| ETH-USDC | 40% | 2.0× | Higher threshold — noisier |
+| SOL-USDC | 30% | 2.0× | — |
+| XRP-USDC | 55% | 2.0× | Very noisy — high filter |
+| DOGE-USDC | 25% | 2.0× | — |
+| BNB-USDC | 25% | 2.0× | — |
+| SUI-USDC | 35% | 2.5× | — |
+| ENA-USDC | 25% | 1.5× | — |
+| LINK-USDC | 25% | 3.0× | — |
+| ADA-USDC | 30% | 2.0× | — |
 
 ---
 
 ## Implemented Modules
 
 ### 1. Data Layer ✅
-**Responsibility:** Ingest, normalize, and store all market data in real time.
-
-- **WebSocket feeds** — Live OHLCV, order book (L2), trades via BloFin WebSocket
-- **REST polling** — Historical candles, tickers, funding rates, open interest
-- **Storage** — TimescaleDB (PostgreSQL) for time-series data, Redis for hot cache
+- **Six-timeframe WebSocket feeds** — 1m/3m/5m/15m/1h/4h per symbol (60 channels total)
+- **REST polling** — Historical candles (paginated), tickers, funding rates, open interest
+- **Storage** — TimescaleDB (PostgreSQL port 5433) for time-series; Redis (port 6379) for hot cache
+- **Sentiment & On-Chain** — Fear & Greed Index, BTC dominance, Binance funding rate + OI (every 5 min)
 - **Location:** `src/data/feeds/`, `src/data/storage/`, `src/data/preprocessing/`
 
 ### 2. Signal Engine ✅
-**Responsibility:** Generate trading signals using a multi-strategy ensemble.
+**Ensemble signal scorer: 6 sources × weighted → 0–100 confidence**
 
-#### Technical Analysis Signals
-- Trend: EMA crossovers (9/21/50/200), Supertrend, ADX
-- Momentum: RSI (14), MACD histogram, Stochastic RSI
-- Volatility: Bollinger Bands, ATR, BB Squeeze detection
-- Volume: VWAP, CVD (Cumulative Volume Delta), OBV
-
-#### Market Structure Analysis
-- Trend direction detection
-- Break of Structure (BOS) / Change of Character (CHoCH) identification
-- Liquidity sweeps detection
-- Fair Value Gaps (FVG) analysis
-
-#### Machine Learning Models
-| Model | Status | Purpose |
+| Source | Weight | Details |
 |---|---|---|
-| LightGBM | ✅ Implemented | Directional classifier (-1/0/+1) |
-| Walk-forward training | ✅ Implemented | Time-series cross-validation |
-| Feature engineering | ✅ Implemented | 50+ technical features |
+| Technical | 30% | EMA cross, Supertrend, ADX, RSI, MACD, StochRSI, BB, ATR — trend-aware |
+| Market Structure | 25% | BOS/CHoCH, FVG, liquidity sweeps, order blocks |
+| ML (blended) | 25% | LightGBM + LSTM agree → avg conf; disagree → 0 |
+| Volume | 10% | VWAP position, VWAP anchor cross, CVD, OBV |
+| Sentiment | 5% | Fear & Greed index, news NLP (VADER + crypto keywords) |
+| On-chain | 5% | BTC dominance, funding diff, OI change |
+
+**ML Models (retrained Mar 02-03, balanced weights + drop-flat, 18k bars, 10-fold walk-forward):**
+- **LightGBM** — 40 models (10 symbols × 1m/3m/5m/15m), **75 features** (+time-of-day: hour_sin/cos/dow_sin/cos/is_weekend)
+  - n_estimators=1000, num_leaves=127, reg_alpha/lambda=0.1, early_stopping=50
+  - Grid-search optimized per symbol; OOS Sharpe: BTC=6.50, ETH=9.16, SOL=9.22
+  - SHAP: time-of-day features rank #2-8 by gain — strong intraday seasonality
+- **LSTM** — Bidirectional 2-layer, 60-bar lookback, **GPU accelerated (RTX 5070)**
+  - **10 models**: all 10 symbols at 15m (previously only 5)
+- **ML gating:** LightGBM on 1m/3m/5m/15m; LSTM on 15m only; HTFs (1h/4h) = pure TA
 
 **Location:** `src/signals/technical/`, `src/signals/ml_models/`, `src/signals/ensemble.py`
 
 ### 3. Decision Core ✅
-**Responsibility:** Evaluate signals and decide whether to open, hold, scale, or close a position.
+- **Six-timeframe confluence** — LTF (1m/3m/5m/15m) entry + 1h intermediate + 4h bias
+- **Adaptive:** 4h flat → 2-TF sufficient; 4h active → 3-TF required
+- **Regime detection** — trending_up / trending_down / ranging / volatile / breakout
+- **Correlation guard** — blocks new positions when ≥2 same-direction positions already open
+- **Entry gate:** confidence ≥ per-symbol threshold AND MTF confluence AND all risk filters
+- **ATR-based SL** (2.0× default), TP at 2:1 RR; trailing stop disabled by default
 
-- Signal aggregation with confidence scoring (0–100%)
-- Multi-timeframe confluence (1m, 5m, 15m, 30m, 1h, 4h, 1D)
-- Regime detection (trending_up / trending_down / ranging / volatile / breakout) — adapts strategy per regime
-- Entry trigger: Signal score > threshold AND risk gate passes
-- Exit logic: ATR-based stop loss, take profit ladder (2:1 RR ratio)
-
-**Location:** `src/decision/core.py`, `src/decision/confluence.py`, `src/decision/regime.py`
+**Location:** `src/decision/core.py`, `src/decision/confluence.py`
 
 ### 4. Risk Manager ✅
-**Responsibility:** Protect capital. This module can veto any trade.
-
-- **Position Sizing** — Fractional Kelly Criterion
-- **Max drawdown circuit breaker** — Halts trading if daily DD exceeds limit (default 5%)
-- **Max open positions** — Configurable limit (default 5)
-- **Portfolio risk cap** — Total open risk capped as % of portfolio (default 2%)
-- **Single trade risk** — Max risk per trade (default 0.5%)
-
-**Location:** Integrated in `src/decision/core.py`
+- **Kelly position sizing** — 25% fraction, capped at 0.5% of portfolio per trade
+- **ADX filter** — Blocks entries when ADX < 20
+- **Correlation guard** — Max 2 correlated (same-direction) positions simultaneously
+- **Dead signal watchdog** — Telegram alert if no closed candles for >10 min
+- **Daily drawdown circuit breaker** — Halts at 5% daily DD
 
 ### 5. Execution Engine ✅
-**Responsibility:** Submit and manage orders with optimal fill quality.
+- **Paper engine** (`src/execution/paper.py`) — Simulated fills, SL/TP tick monitoring, position recovery on restart
+- **Live engine** (`src/execution/live.py`) — `dry_run=True` by default
 
-- **Order types supported:** Market, Limit, Stop-Loss, Take-Profit
-- **Order state machine:** Tracks pending → open → partially filled → filled → cancelled
-- **Paper trading mode:** Simulated execution with configurable fees and slippage
+### 6. Exchange Adapter ✅ — BloFin
+- REST + WebSocket (OHLCV, order book, trades, orders, positions)
+- `ThreadedResolver` for all aiohttp sessions (Windows DNS fix)
+- `heartbeat=20` on WS (protocol-level PING)
+- Private WS only in live mode
+- 429 rate limit: 300s backoff on startup, bail-out preload after 3 consecutive 429s
 
-**Location:** `src/execution/paper.py`
+### 7. Monitoring ✅
+- **Dashboard** (`src/monitoring/dashboard.py`) — Streamlit, 6 tabs:
+  - **Terminal** — Live portfolio equity, open positions with real P&L, signals table
+  - **Advanced Charts** — TradingView-quality candlesticks (streamlit-lightweight-charts), EMA 9/21/50, Bollinger Bands, volume overlay, RSI pane
+  - **Paper Trades** — Full trade history with P&L cards
+  - **Brain** — 6-TF signal badges per symbol, AI trade analyst
+  - **Intelligence** — Fear & Greed, BTC dominance, funding rates, news
+  - **System** — Agent control, logs, configuration
+- **Stale price fallback** — Dashboard uses Redis prices up to 30 min old; shows banner when WS is reconnecting
+- **Watchdog** (`scripts/watchdog.sh`) — Checks every 30s, auto-restarts agent + dashboard
 
-### 6. Exchange Adapters ✅
+---
 
-#### BloFin (Primary) ✅
-- REST API: Account info, order management, position management, market data
-- WebSocket: Real-time price feed, order updates, position updates
-- Endpoints: USDT-margined perpetuals
-- Authentication: HMAC-SHA256 API key/secret signing
+## Six-Timeframe Stack
 
-#### Binance ✅
-- REST API for USDT-margined futures
-- WebSocket market data streams
-- Order and position management
+| TF | Role | ML | DB bars |
+|---|---|---|---|
+| 1m | Fast scalp trigger | LightGBM | ~240/day |
+| 3m | Fast entry confirmation | LightGBM | ~480/day |
+| 5m | Entry signal | LightGBM | ~288/day |
+| 15m | Primary entry | LightGBM + LSTM | ~96/day |
+| 1h | Intermediate trend | Pure TA | ~24/day |
+| 4h | Bias / regime | Pure TA | ~6/day |
 
-**Location:** `src/exchanges/blofin.py`, `src/exchanges/binance.py`, `src/exchanges/base.py`
+---
 
-### 7. Data Enrichment ✅
+## Grid Search Results (Mar 01 — all symbols, 3000 bars, 25% OOS)
 
-#### Sentiment Feed ✅
-- Fear & Greed Index integration
-- Crypto news aggregation
-- Sentiment scoring with confidence modifiers
+| Symbol | Best Conf | ATR | OOS Sharpe | OOS WR |
+|---|---|---|---|---|
+| BTC-USDC | 25% | 2.0× | 6.50 | 55% |
+| ETH-USDC | 40% | 2.0× | 9.16 | 75% |
+| SOL-USDC | 30% | 2.0× | 9.22 | 63% |
+| DOGE-USDC | 25% | 2.0× | 6.84 | 58% |
 
-#### On-Chain Data ✅
-- Exchange flow data (placeholder for premium APIs)
-- Whale transaction tracking
-- On-chain metrics aggregation
+Full results: `backtests/optimize_*_*.csv`
 
-**Location:** `src/data/feeds/sentiment.py`, `src/data/feeds/onchain.py`
+---
 
-### 8. Risk & Position Management ✅
+## Known Bugs Fixed
 
-#### RL Position Sizer ✅
-- PPO-based dynamic position sizing
-- Rule-based fallback
-- Adapts to regime, volatility, and portfolio risk
+| # | Date | Bug | Fix |
+|---|---|---|---|
+| 1 | Early | `aiodns` fails on Windows DNS | `ThreadedResolver` in all `ClientSession` instances |
+| 2 | Early | Dashboard spawned duplicate agents | Idempotency guard in `_start_agent()` |
+| 3 | Early | Private WS reconnect in paper mode | Skip private WS when `is_paper=True` |
+| 4 | Early | BloFin rejects `{"op":"ping"}` | `ws_connect(heartbeat=20)` |
+| 5 | Feb 28 | Forming candle buffer flood (CRITICAL) | Skip forming candles in `_on_candle()` — `closed=True` only |
+| 6 | Feb 28 | LGBM/LSTM on wrong timeframe (OOD) | ML gated to LTF timeframes only |
+| 7 | Mar 01 | Volume score always 0 (CRITICAL) | Added `vwap_dist`, `cvd_norm`, etc. to `compute_all()` |
+| 8 | Mar 01 | `runtime.json` threshold override | Dashboard slider was overriding settings.yaml to 9 |
+| 9 | Mar 01 | Session VWAP not resetting | VWAP now groups by UTC date |
+| 10 | Mar 01 | Trailing stop destroying TP hits | `trailing_stop_activation_atr: 0` (disabled by default) |
+| 11 | Mar 01 | Correlation overexposure | `max_correlated_positions=2` guard in risk filter |
+| 12 | Mar 02 | DB malformed 15m candles (CRITICAL) | WS stored forming candle receipt timestamps as 15m candles (3000 bad rows). Deleted + `fetch_price_history()` now filters on TF-aligned timestamps only |
+| 13 | Mar 02 | DB stale no-dash symbols | `BTCUSDC`/`ETHUSDC`/`SOLUSDC` (17,928 rows) deleted |
+| 14 | Mar 02 | Open positions showing P&L=$0 | `get_live_prices()` fell through to 429-limited REST returning `price=0.0`. Fixed: stale Redis (< 30 min) used before REST calls |
+| 15 | Mar 02 | BloFin IP rate limit death loop | Preload bails on 3rd consecutive 429; startup retry waits 300s on 429 (was 5s→10s→crash); dashboard stops hammering REST |
+| 16 | Mar 02 | Agent crashes after 10 startup retries | Startup retry now loops **indefinitely** with 300s wait on 429 — no more death loop |
+| 17 | Mar 03 | SL cooldown asyncio race condition | Cooldown was set AFTER `await db.log_paper_trade()` inside for loop → concurrent tasks bypassed it. Fixed: set all cooldowns synchronously BEFORE any awaits |
+| 18 | Mar 03 | Zombie agent accumulation | `main()` overwrote `agent.pid` without killing old process → multiple agents writing to log. Fixed: startup reads old pid, `taskkill /F /PID <old>` before writing new pid |
 
-**Location:** `src/risk/rl_sizer.py`
+---
 
-### 8. Monitoring & Observability ✅
+## Phase Roadmap
 
-#### Dashboard Features
-- **7 Tabs:** Overview, Charts, Notifications, Positions, Signals, Trades, Logs
-- **Real-time prices** from BloFin WebSocket
-- **Price charts** with candlestick visualization (Altair)
-- **Trade notifications** with color-coded alerts (🟢 buy, 🔴 sell, 🟡 pending)
-- **Log viewer** with filtering by level (INFO/WARNING/ERROR)
-- **Manual refresh** button (no auto-refresh to avoid page reload)
-- **Demo data loader** for testing
+### Phases 1–8 ✅ COMPLETE
 
-#### Alerting & Analytics
-- **Telegram alerts** — Trade notifications and system events
-- **Structured JSON logging** — Every signal, decision, order, fill logged
-- **Performance metrics** — Sharpe, Sortino, win rate, expectancy, max DD
-- **Backtesting** — Vectorized engine with realistic simulation
-- **Strategy optimizer** — Grid/random search for parameter tuning
+- **Phase 1** — BloFin exchange adapter, TimescaleDB, Redis, paper engine
+- **Phase 2** — Full TA library, market structure, LightGBM, ensemble, MTF confluence
+- **Phase 3** — Backtester, Streamlit dashboard, Telegram alerts
+- **Phase 3.5** — Market Intelligence tab (Fear & Greed, funding, news)
+- **Phase 3.6** — SentimentFeed into ensemble, adaptive 4h confluence, SL recovery
+- **Phase 4** — LSTM model, OI/funding pre-filter, live engine scaffold, thresholds tuned
+- **Phase 5** — VWAP anchor, session VWAP, 5-symbol universe, 70-feature LGBM
+- **Phase 6** — Watchdog, correlation guard, SHAP analysis, OOS validation, grid search, weekly retrain
+- **Phase 7** — Per-symbol optimization (grid search all 5 symbols, symbol_overrides in settings.yaml)
+- **Phase 8** — 6-TF stack (1m/3m/5m added), 10-symbol universe (all BloFin USDC pairs), 40 LGBM models, GPU training (RTX 5070)
 
-**Location:** `src/monitoring/dashboard.py`, `src/monitoring/alerts.py`, `src/monitoring/analytics.py`
+### Phase 9 — Robustness & Production Hardening (CURRENT)
 
-### 9. Portfolio Management ✅
+- [x] DB cleanup — deleted 20,928 malformed/stale candle rows
+- [x] Dashboard charts — TradingView-quality (streamlit-lightweight-charts), aligned timestamps only
+- [x] Rate limit resilience — 300s backoff on 429, preload bail-out, stale Redis fallback
+- [x] Watchdog — auto-restarts agent + dashboard
+- [x] ML accuracy — 75 features (+ time-of-day), n_estimators=1000, 10 LSTM models
+- [x] SL cooldown race condition fix — cooldowns set synchronously before any awaits
+- [x] Zombie agent guard — startup kills previous PID via taskkill before writing new pid
+- [ ] Cloud hosting — VPS deployment (see Hosting section)
+- [ ] Paper validation — 50+ trades, Sharpe > 2, max DD < 10%
 
-- Position tracking across multiple symbols
-- P&L attribution (realized/unrealized)
-- Equity curve history
-- Risk metrics (concentration, correlation)
-- Dynamic rebalancing
+### Phase 10 — Live Deployment
 
-**Location:** `src/risk/portfolio.py`
-
-### 10. Strategy Optimization ✅
-
-- Grid search optimization
-- Random search optimization
-- Multi-objective (Sharpe, returns, drawdown)
-- Result export to JSON
-
-**Location:** `scripts/optimizer.py`
+- [ ] Paper validation complete (50+ trades)
+- [ ] Switch `AGENT_MODE=live`, `dry_run=False`
+- [ ] Start with 1% of capital, scale weekly
+- [ ] Multi-exchange fallback (Bybit, OKX)
 
 ---
 
@@ -191,314 +232,277 @@ Build a high-accuracy, AI-driven autonomous trading agent capable of live tradin
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.12+ |
-| Async Runtime | asyncio + aiohttp |
-| ML Framework | PyTorch, scikit-learn, LightGBM |
-| RL Framework | Stable-Baselines3 |
-| Data Storage | TimescaleDB (PostgreSQL), Redis |
-| Dashboard | Streamlit |
-| Exchange Connectivity | Custom BloFin + Binance adapters |
-| Backtesting | Custom vectorized engine |
-| Config Management | Pydantic Settings + YAML |
-| Secrets Management | python-dotenv |
-| Containerization | Docker + docker-compose |
-| Testing | pytest, pytest-asyncio |
+| Language | Python 3.12 (`.venv_312`) |
+| Async runtime | asyncio + aiohttp + ThreadedResolver (Windows DNS fix) |
+| ML | PyTorch 2.10+cu128 (LSTM, RTX 5070 GPU), LightGBM 4.6, scikit-learn |
+| NLP | vaderSentiment + custom crypto keyword dictionary |
+| Storage | TimescaleDB port 5433, Redis port 6379 (Docker) |
+| Dashboard | Streamlit + streamlit-lightweight-charts (TradingView) |
+| Charts | TradingView lightweight-charts — candlestick + EMA + BB + Volume + RSI |
 
 ---
 
-## Project Phases
+## Running Locally
 
-### Phase 1 — Foundation ✅ COMPLETE
-- [x] Project scaffolding, config system, logging setup
-- [x] BloFin exchange adapter (REST + WebSocket)
-- [x] Market data pipeline (live OHLCV, order book, trades)
-- [x] TimescaleDB schema and data storage
-- [x] Paper trading mode (simulated execution, real data)
+```bash
+# 1. Start infrastructure
+docker-compose up -d timescaledb redis
 
-### Phase 2 — Signal Engine ✅ COMPLETE
-- [x] Technical indicator library (custom pandas implementation)
-- [x] Feature engineering pipeline (50+ features)
-- [x] LightGBM directional classifier
-- [x] Ensemble signal scorer (technical + structure + ML + volume)
-- [x] Market structure analysis (BOS/CHoCH, FVGs, liquidity sweeps)
+# 2. Activate venv
+source .venv_312/Scripts/activate
 
-### Phase 3 — Risk & Execution ✅ COMPLETE
-- [x] Risk manager module with all guards
-- [x] Execution engine with order state machine
-- [x] TP/SL automation
-- [x] Portfolio state tracker
-- [x] Backtesting harness with historical BloFin data
+# 3. Start everything (agent + dashboard + watchdog)
+PYTHONUTF8=1 PYTHONUNBUFFERED=1 python -u -m src.agent >> logs/agent.log 2>&1 &
+echo $! > agent.pid
+streamlit run src/monitoring/dashboard.py --server.port 8501 --server.headless true >> dashboard_startup.log 2>&1 &
+echo $! > dashboard.pid
+bash scripts/watchdog.sh >> logs/watchdog.log 2>&1 &
+echo $! > watchdog.pid
 
-### Phase 4 — Intelligence Layer 🚧 IN PROGRESS
-- [x] Market regime classifier (trending/ranging/volatile/breakout)
-- [x] Multi-timeframe confluence engine
-- [x] Reinforcement learning position sizing agent
-- [x] Sentiment feed integration
-- [x] On-chain data integration
+# 4. Remote access via ngrok
+ngrok http 8501
 
-### Phase 5 — Live Deployment 🚧 IN PROGRESS
-- [x] Paper trading mode on real exchange (BloFin testnet / minimal capital)
-- [x] Performance monitoring dashboard (7-tab Streamlit: Terminal, Charts, Paper Trades, Inventory, Intelligence, Ledger, System)
-- [x] Telegram alerting bot
-- [x] Production signal thresholds restored (min_confidence=55, direction_threshold=0.05, confluence_confidence≥55)
-- [x] Stop-loss widened to 2.5× ATR (was 1.5×) to survive crypto volatility noise
-- [x] atr_sl_multiplier + rr_ratio configurable from settings.yaml + wired into agent via config
-- [x] ADX trend filter (require ADX > 25 before entry — blocks ranging market trades)
-- [x] 4h candle subscription + 3-TF confluence requirement (15m entry + 1h + 4h trend bias must all agree)
-- [x] Start/Stop Agent button in dashboard UI (sidebar: spawns python -m src.agent, tracks PID, live status badge)
-- [x] Paper position recovery on restart — agent reloads open positions from DB on startup, corrects balance using last paper_trades.balance_after timestamp logic
-- [ ] Stress testing and edge case hardening
-- [ ] Gradual capital scaling protocol
-
----
-
-## File Structure
-
+# 5. Kill everything
+taskkill //F //PID $(cat agent.pid)
+taskkill //F //PID $(cat dashboard.pid)
+taskkill //F //PID $(cat watchdog.pid)
 ```
-cryptoagent/
-├── project.md                  # This file
-├── .env                        # API keys and secrets (never committed)
-├── config/
-│   ├── settings.yaml           # Strategy and risk parameters
-│   └── exchanges.yaml          # Exchange endpoint config
-├── src/
-│   ├── agent.py                # Main agent orchestrator
-│   ├── core/
-│   │   ├── config.py           # Pydantic settings loader
-│   │   └── logging.py          # Structured logging setup
-│   ├── data/
-│   │   ├── feeds/              # WebSocket + REST data collectors
-│   │   │   ├── market_feed.py      # Live market data manager
-│   │   │   ├── historical.py       # Historical data fetcher
-│   │   │   ├── sentiment.py        # Sentiment data feed
-│   │   │   └── onchain.py          # On-chain data feed
-│   │   ├── storage/            # DB write/read models
-│   │   │   └── schema.py           # TimescaleDB schema
-│   │   └── preprocessing/      # Feature engineering
-│   │       └── features.py          # ML feature generation
-│   ├── signals/
-│   │   ├── ensemble.py         # Signal aggregator
-│   │   ├── technical/         # TA indicators
-│   │   │   ├── indicators.py      # 20+ technical indicators
-│   │   │   └── structure.py       # Market structure analysis
-│   │   └── ml_models/         # Trained model wrappers
-│   │       └── classifier.py      # LightGBM classifier
-│   ├── decision/
-│   │   ├── regime.py          # Market regime detector
-│   │   ├── confluence.py      # Multi-timeframe logic
-│   │   └── core.py           # Entry/exit decision logic
-│   ├── execution/
-│   │   └── paper.py          # Paper trading engine
-│   ├── risk/
-│   │   └── rl_sizer.py       # RL position sizing
-│   ├── exchanges/
-│   │   ├── base.py           # Abstract exchange interface
-│   │   ├── blofin.py         # BloFin adapter
-│   │   └── binance.py        # Binance adapter
-│   └── monitoring/
-│       ├── dashboard.py      # Streamlit dashboard
-│       ├── alerts.py         # Telegram alerting
-│       └── analytics.py     # Performance metrics
-├── models/                    # Saved ML model weights
-├── backtests/                 # Backtest results and reports
-├── tests/                     # Unit and integration tests
-│   ├── unit/
-│   │   ├── test_regime.py
-│   │   └── test_indicators.py
-│   └── integration/
-│       └── test_agent.py
-├── scripts/
-│   ├── train_models.py       # Model training pipeline
-│   ├── download_history.py   # Historical data downloader
-│   └── backtest.py          # Vectorized backtesting harness
-├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-└── README.md
-```
-cryptoagent/
-├── project.md                  # This file
-├── .env                        # API keys and secrets (never committed)
-├── config/
-│   ├── settings.yaml           # Strategy and risk parameters
-│   └── exchanges.yaml          # Exchange endpoint config
-├── src/
-│   ├── agent.py                # Main agent orchestrator
-│   ├── core/
-│   │   ├── config.py           # Pydantic settings loader
-│   │   └── logging.py          # Structured logging setup
-│   ├── data/
-│   │   ├── feeds/              # WebSocket + REST data collectors
-│   │   │   ├── market_feed.py      # Live market data manager
-│   │   │   └── historical.py       # Historical data fetcher
-│   │   ├── storage/            # DB write/read models
-│   │   │   └── schema.py           # TimescaleDB schema
-│   │   └── preprocessing/      # Feature engineering
-│   │       └── features.py          # ML feature generation
-│   ├── signals/
-│   │   ├── ensemble.py         # Signal aggregator
-│   │   ├── technical/         # TA indicators
-│   │   │   ├── indicators.py      # 20+ technical indicators
-│   │   │   └── structure.py       # Market structure analysis
-│   │   └── ml_models/         # Trained model wrappers
-│   │       └── classifier.py      # LightGBM classifier
-│   ├── decision/
-│   │   ├── regime.py          # Market regime detector
-│   │   ├── confluence.py      # Multi-timeframe logic
-│   │   └── core.py           # Entry/exit decision logic
-│   ├── execution/
-│   │   └── paper.py          # Paper trading engine
-│   ├── risk/
-│   │   ├── rl_sizer.py       # RL position sizing
-│   │   └── portfolio.py       # Portfolio manager
-│   ├── exchanges/
-│   │   ├── base.py           # Abstract exchange interface
-│   │   ├── blofin.py        # BloFin adapter
-│   │   └── binance.py       # Binance adapter
-│   └── monitoring/
-│       ├── dashboard.py      # Streamlit dashboard (7 tabs)
-│       ├── alerts.py         # Telegram alerting
-│       └── analytics.py     # Performance metrics
-├── models/                    # Saved ML model weights
-├── backtests/                 # Backtest results and reports
-├── tests/                     # Unit and integration tests
-│   ├── unit/
-│   │   ├── test_regime.py
-│   │   └── test_indicators.py
-│   └── integration/
-│       └── test_agent.py
-├── scripts/
-│   ├── train_models.py       # Model training pipeline
-│   ├── download_history.py   # Historical data downloader
-│   ├── backtest.py          # Vectorized backtesting harness
-│   └── optimizer.py          # Strategy parameter optimizer
-├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-└── README.md
+
+## Training & Backtesting
+
+```bash
+# Retrain LGBM (single symbol)
+python scripts/train_models.py --symbol BTC-USDC --candles 18000 --splits 10 \
+  --threshold 0.003 --drop-flat --force-retrain
+
+# Retrain LSTM (GPU)
+python scripts/train_models.py --symbol BTC-USDC --candles 18000 \
+  --train-lstm --force-retrain
+
+# Grid search optimal params
+python scripts/optimize_params.py --symbol BTC-USDC --candles 3000 --timeframe 15m
+
+# Backtest
+python scripts/backtest.py --symbol BTC-USDC --candles 2000 --min-confidence 25 --oos-split 0.25
+
+# Weekly retrain (all 10 symbols)
+bash scripts/retrain_weekly.sh
 ```
 
 ---
 
-## Configuration
+## Key Risk Parameters (`config/settings.yaml`)
 
-### Trading Settings (`config/settings.yaml`)
 ```yaml
-agent:
-  mode: paper                         # paper | live
-  primary_exchange: blofin
-  heartbeat_interval: 5
-
-trading:
-  symbols:
-    - BTC-USDC
-    - ETH-USDC
-    - SOL-USDC
-  default_leverage: 5
-  timeframes: [1m, 5m, 15m, 1h, 4h, 1d]
-  primary_timeframe: 15m
-
 signals:
-  min_confidence_threshold: 65
-  confluence_required: 3
-  lookback_candles: 500
+  min_confidence_threshold: 25   # global default (per-symbol overrides in symbol_overrides:)
+  confluence_required: 3         # adaptive: 2 when 4h is flat
 
 risk:
-  max_portfolio_risk_pct: 2.0
-  max_single_trade_risk_pct: 0.5
-  max_daily_drawdown_pct: 5.0
+  atr_sl_multiplier: 2.0         # SL = entry ± 2.0×ATR (grid-search optimal)
+  rr_ratio: 2.0                  # TP = 2× SL distance
+  max_open_positions: 10
+  max_correlated_positions: 2    # max same-direction positions
+  max_daily_drawdown_pct: 5.0    # circuit breaker
   kelly_fraction: 0.25
-  max_open_positions: 5
-```
+  trailing_stop_activation_atr: 0  # disabled (was destroying TP hits)
 
-### Exchange Configuration (`config/exchanges.yaml`)
-- BloFin REST/WSS endpoints
-- Binance planned (disabled)
-
----
-
-## Running the Agent
-
-### Start Paper Trading
-```bash
-python -m src
-# or
-python -m src.agent
-```
-
-### Start Live Trading
-Set `.env` with `BLOFIN_API_KEY`, `BLOFIN_API_SECRET`, `BLOFIN_PASSPHRASE`, then:
-```bash
-export CRYPTOAGENT_MODE=live
-python -m src
-```
-
-### Run Dashboard
-```bash
-streamlit run src/monitoring/dashboard.py --server.port 8501
-```
-
-### Run Backtest
-```bash
-python scripts/backtest.py --symbol BTC-USDC --timeframe 15m --candles 500
-```
-
-### Run Tests
-```bash
-python -m pytest tests/ -v
-```
-
-# Run specific test file
-python -m pytest tests/unit/test_indicators.py -v
-
-# Run with coverage
-python -m pytest tests/ --cov=src --cov-report=html
+ensemble_weights:
+  technical: 0.30
+  structure: 0.25
+  ml: 0.25
+  volume: 0.10
+  sentiment: 0.05
+  onchain: 0.05
 ```
 
 ---
 
-## Key Design Principles
+## Cloud Hosting Plan
 
-1. **Safety First** — Paper trade and backtest every strategy before live capital
-2. **No Black Boxes** — Every decision must be explainable and logged
-3. **Fail Safe** — Any unhandled exception closes open positions and halts trading
-4. **Modularity** — Strategies and models are plug-and-play without touching core logic
-5. **Reproducibility** — All experiments are seeded and versioned
-6. **Capital Preservation** — The risk manager is the most important component
+See **Hosting** section below for full deployment guide.
 
 ---
 
-## Risk Disclaimer
+## Backtest Results (Grid Search OOS — Mar 01)
 
-This agent will manage real capital in live markets. Crypto and futures markets are highly volatile. All strategies must be:
-- Backtested on at minimum 2 years of data
-- Forward-tested on paper for minimum 2 weeks
-- Deployed with minimal capital initially
-- Monitored continuously during live trading
-- Accompanied by hard stop-loss limits at the account level
-
----
-
-## Performance Metrics
-
-The system tracks:
-- **Win Rate** — Percentage of profitable trades
-- **Sharpe Ratio** — Risk-adjusted returns
-- **Sortino Ratio** — Downside risk-adjusted returns
-- **Max Drawdown** — Peak-to-trough decline
-- **Expectancy** — Average trade P&L
-- **Profit Factor** — Gross profits / gross losses
+| Symbol | Bars | Conf | ATR | OOS Trades | OOS WR | OOS Sharpe |
+|---|---|---|---|---|---|---|
+| BTC-USDC 15m | 3000 | 25% | 2.0× | 20 | 55% | 6.50 |
+| ETH-USDC 15m | 3000 | 40% | 2.0× | 8 | 75% | 9.16 |
+| SOL-USDC 15m | 3000 | 30% | 2.0× | 16 | 63% | 9.22 |
+| DOGE-USDC 15m | 3000 | 25% | 2.0× | 19 | 58% | 6.84 |
 
 ---
 
-## Dependencies
+## Hosting — Production Deployment Plan
 
-See `requirements.txt` for full list. Key dependencies:
-- `aiohttp` — Async HTTP/WebSocket
-- `pandas` — Data manipulation
-- `lightgbm` — ML classifier
-- `sqlalchemy` + `asyncpg` — Database
-- `redis` — Cache
-- `streamlit` — Dashboard
-- `pydantic` — Config validation
-- `structlog` — Structured logging
+### Overview
+
+The system has 4 components that need to run 24/7:
+
+| Component | What it does | Resource needs |
+|---|---|---|
+| **Agent** (Python) | Trading logic, WS feeds, ML inference | 2 CPU cores, 4 GB RAM |
+| **Dashboard** (Streamlit) | Web UI | 1 CPU core, 1 GB RAM |
+| **TimescaleDB** (PostgreSQL) | Candle/trade storage | 2 GB RAM, 20 GB SSD |
+| **Redis** | Price hot-cache | 256 MB RAM |
+
+### Recommended: Single VPS (Best cost/simplicity)
+
+**Provider: Hetzner Cloud CX31** (~€10/month, ~$11/month)
+- 2 vCPU (AMD), 8 GB RAM, 80 GB NVMe SSD, unlimited traffic
+- Location: Nuremberg / Helsinki (low latency to BloFin servers in Asia — use Singapore if available)
+
+**Alternative providers:**
+| Provider | Plan | Cost | Notes |
+|---|---|---|---|
+| Hetzner CX31 | 2 vCPU / 8 GB | ~$11/mo | Best value in EU |
+| DigitalOcean Droplet | 2 vCPU / 4 GB | ~$24/mo | Easy setup, good docs |
+| Vultr | 2 vCPU / 4 GB | ~$24/mo | Singapore region available (lower BloFin latency) |
+| Linode/Akamai | 2 vCPU / 4 GB | ~$24/mo | Reliable |
+| AWS EC2 t3.medium | 2 vCPU / 4 GB | ~$30/mo | Overkill but familiar |
+
+> **Note:** LSTM training needs GPU. Keep training on your Windows machine with the RTX 5070, then `scp` the `.joblib`/`.pt` model files to the VPS. The VPS only does **inference** (fast, CPU-only).
+
+### Step-by-Step Migration
+
+#### 1. Provision VPS
+```bash
+# After creating VPS (Ubuntu 24.04 LTS recommended):
+ssh root@<vps-ip>
+adduser cryptoagent
+usermod -aG sudo cryptoagent
+```
+
+#### 2. Install dependencies
+```bash
+# Docker + Docker Compose
+curl -fsSL https://get.docker.com | sh
+apt install -y python3.12 python3.12-venv git nginx certbot
+
+# Clone repo
+git clone https://github.com/yourrepo/cryptoagent.git
+cd cryptoagent
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+#### 3. Start infrastructure
+```bash
+docker-compose up -d timescaledb redis
+```
+
+#### 4. Configure secrets
+```bash
+cp .env.example .env
+nano .env
+# Fill in: BLOFIN_API_KEY, BLOFIN_API_SECRET, BLOFIN_API_PASSPHRASE
+# Set: BLOFIN_TESTNET=false, AGENT_MODE=paper (then live when ready)
+```
+
+#### 5. Run with systemd (auto-restart on crash/reboot)
+
+Create `/etc/systemd/system/cryptoagent.service`:
+```ini
+[Unit]
+Description=CryptoAgent Trading Bot
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+User=cryptoagent
+WorkingDirectory=/home/cryptoagent/cryptoagent
+Environment=PYTHONUTF8=1
+EnvironmentFile=/home/cryptoagent/cryptoagent/.env
+ExecStart=/home/cryptoagent/cryptoagent/.venv/bin/python -u -m src.agent
+Restart=always
+RestartSec=30
+StandardOutput=append:/home/cryptoagent/cryptoagent/logs/agent.log
+StandardError=append:/home/cryptoagent/cryptoagent/logs/agent.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create `/etc/systemd/system/cryptodashboard.service`:
+```ini
+[Unit]
+Description=CryptoAgent Dashboard
+After=network.target
+
+[Service]
+User=cryptoagent
+WorkingDirectory=/home/cryptoagent/cryptoagent
+EnvironmentFile=/home/cryptoagent/cryptoagent/.env
+ExecStart=/home/cryptoagent/cryptoagent/.venv/bin/streamlit run src/monitoring/dashboard.py --server.port 8501 --server.headless true --server.address 127.0.0.1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable cryptoagent cryptodashboard
+systemctl start cryptoagent cryptodashboard
+```
+
+#### 6. HTTPS dashboard with Nginx + Let's Encrypt
+
+```nginx
+# /etc/nginx/sites-available/cryptoagent
+server {
+    listen 443 ssl;
+    server_name dashboard.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/dashboard.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dashboard.yourdomain.com/privkey.pem;
+
+    # Password protect the dashboard
+    auth_basic "CryptoAgent";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:8501;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+```bash
+certbot --nginx -d dashboard.yourdomain.com
+htpasswd -c /etc/nginx/.htpasswd admin
+systemctl restart nginx
+```
+
+#### 7. Deploy model updates (from Windows → VPS)
+```bash
+# After retraining on Windows RTX 5070, push models to VPS
+scp models/lgbm_*.joblib cryptoagent@<vps-ip>:~/cryptoagent/models/
+scp models/lstm_*.pt cryptoagent@<vps-ip>:~/cryptoagent/models/
+ssh cryptoagent@<vps-ip> "sudo systemctl restart cryptoagent"
+```
+
+### Cost Summary
+
+| Item | Monthly Cost |
+|---|---|
+| Hetzner CX31 VPS | ~$11 |
+| Domain (optional) | ~$1 |
+| **Total** | **~$12/month** |
+
+### Security Checklist
+
+- [ ] Firewall: only allow ports 22 (SSH), 80, 443 inbound
+- [ ] SSH key auth only (disable password login)
+- [ ] Dashboard behind Nginx + basic auth (or VPN-only access)
+- [ ] `.env` never committed to git — use `scp` or secrets manager
+- [ ] BloFin API key: enable only "Trade" permission, whitelist VPS IP
+- [ ] Regular `apt upgrade` and Docker image updates

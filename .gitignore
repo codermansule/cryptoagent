@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv_312/
 venv/
 dist/
 build/
@@ -19,6 +20,15 @@ models/*.joblib
 
 # Logs
 logs/
+
+# Runtime state files
+*.pid
+nul
+config/runtime.json
+dashboard_startup.log
+
+# Backtest output data (large CSVs)
+backtests/
 
 # Notebooks output
 notebooks/.ipynb_checkpoints/

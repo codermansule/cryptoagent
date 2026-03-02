@@ -197,6 +197,18 @@ class TelegramAlerter:
         )
         await self.send_text(msg)
 
+    async def dead_signal_alert(self, minutes_silent: float, symbols: list[str]) -> None:
+        """Alert when no signals have been processed for an extended period."""
+        syms = ", ".join(symbols)
+        msg = (
+            f"🔇 <b>Dead Signal Detected</b>\n"
+            f"No signals processed for <code>{minutes_silent:.0f} min</code>\n"
+            f"Symbols: <code>{syms}</code>\n"
+            f"Check: WebSocket connection, exchange status\n"
+            f"{_now()}"
+        )
+        await self.send_text(msg)
+
     async def error_alert(self, component: str, error: str) -> None:
         msg = (
             f"⚠️ <b>Error in {component}</b>\n"

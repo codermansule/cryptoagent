@@ -20,6 +20,13 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 os.environ.setdefault("PYTHONUTF8", "1")
 
+# Load .env into os.environ early so Azure / Gemini keys are available before any imports
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).parent.parent.parent / ".env", override=False)
+except Exception:
+    pass
+
 import numpy as np
 import pandas as pd
 
@@ -33,31 +40,31 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS for Premium Look ────────────────────────────────────────────────
+# ── Custom CSS — Mobile-First Premium Look ────────────────────────────────────
 def inject_custom_css():
     st.markdown("""
     <style>
-        /* Import Inter font */
+        /* ── Fonts ── */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        
-        /* Global styles */
+
+        /* ── Base ── */
         html, body, [data-testid="stAppViewContainer"] {
             font-family: 'Inter', sans-serif;
             background-color: #0b0e11;
         }
-        
-        /* Sidebar styling */
+
+        /* ── Sidebar ── */
         [data-testid="stSidebar"] {
             background-color: #161a1e;
             border-right: 1px solid #2d3139;
         }
-        
-        /* Metric styling */
+
+        /* ── Metrics ── */
         [data-testid="stMetricValue"] {
             font-size: 1.8rem !important;
             font-weight: 700 !important;
             color: #00ffa3 !important;
-            text-shadow: 0 0 10px rgba(0, 255, 163, 0.2);
+            text-shadow: 0 0 10px rgba(0,255,163,0.2);
         }
         [data-testid="stMetricLabel"] {
             font-size: 0.95rem !important;
@@ -66,27 +73,8 @@ def inject_custom_css():
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
-        
-        /* Tabs styling */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 24px;
-            background-color: transparent;
-        }
-        .stTabs [data-baseweb="tab"] {
-            height: 50px;
-            white-space: pre-wrap;
-            background-color: transparent;
-            border-radius: 4px;
-            color: #848e9c;
-            font-weight: 500;
-            border: none;
-        }
-        .stTabs [aria-selected="true"] {
-            color: #00ffa3 !important;
-            border-bottom: 2px solid #00ffa3 !important;
-        }
-        
-        /* Mode badges */
+
+        /* ── Mode badges ── */
         .mode-badge {
             padding: 4px 12px;
             border-radius: 20px;
@@ -95,29 +83,21 @@ def inject_custom_css():
             text-transform: uppercase;
             letter-spacing: 1px;
         }
-        .mode-paper {
-            background-color: rgba(240, 185, 11, 0.15);
-            color: #f0b90b;
-            border: 1px solid #f0b90b;
-        }
-        .mode-live {
-            background-color: rgba(255, 59, 48, 0.15);
-            color: #ff3b30;
-            border: 1px solid #ff3b30;
-            box-shadow: 0 0 15px rgba(255, 59, 48, 0.3);
-        }
-        
-        /* Glassmorphism Containers */
+        .mode-paper { background-color:rgba(240,185,11,0.15); color:#f0b90b; border:1px solid #f0b90b; }
+        .mode-live  { background-color:rgba(255,59,48,0.15);  color:#ff3b30; border:1px solid #ff3b30;
+                      box-shadow:0 0 15px rgba(255,59,48,0.3); }
+
+        /* ── Glass card ── */
         .glass-card {
-            background: rgba(22, 26, 30, 0.4);
+            background: rgba(22,26,30,0.4);
             backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255,255,255,0.08);
             border-radius: 12px;
             padding: 24px;
             margin-bottom: 20px;
         }
 
-        /* Tabs styling overhaul */
+        /* ── Tabs — always horizontally scrollable ── */
         .stTabs [data-baseweb="tab-list"] {
             gap: 10px;
             background-color: #121418;
@@ -125,7 +105,14 @@ def inject_custom_css():
             border-radius: 12px;
             margin-bottom: 30px;
             border: 1px solid #2d3139;
+            /* Mobile scroll */
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            flex-wrap: nowrap;
         }
+        .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
         .stTabs [data-baseweb="tab"] {
             height: 44px;
             background-color: transparent;
@@ -133,32 +120,29 @@ def inject_custom_css():
             color: #d1d4dc !important;
             font-weight: 700 !important;
             border: none;
-            padding: 0 25px;
+            padding: 0 22px;
             transition: all 0.2s ease;
+            white-space: nowrap;
+            flex-shrink: 0;
+            min-width: max-content;
         }
         .stTabs [data-baseweb="tab"]:hover {
             color: #ffffff !important;
-            background-color: rgba(255, 255, 255, 0.05);
+            background-color: rgba(255,255,255,0.05);
         }
         .stTabs [aria-selected="true"] {
             background-color: #00ffa3 !important;
             color: #0b0e11 !important;
-            box-shadow: 0 0 20px rgba(0, 255, 163, 0.3);
-        }
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #2d3139;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-track {
-            background: transparent;
+            box-shadow: 0 0 20px rgba(0,255,163,0.3);
         }
 
-        /* Chart text global override for visibility */
-        .js-plotly-plot .plotly .xtick text, 
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width:6px; height:6px; }
+        ::-webkit-scrollbar-thumb { background:#2d3139; border-radius:10px; }
+        ::-webkit-scrollbar-track { background:transparent; }
+
+        /* ── Plotly text ── */
+        .js-plotly-plot .plotly .xtick text,
         .js-plotly-plot .plotly .ytick text,
         .js-plotly-plot .plotly .legendtext,
         .js-plotly-plot .plotly .gtitle {
@@ -167,7 +151,7 @@ def inject_custom_css():
             font-weight: 600 !important;
         }
 
-        /* Ensure Sidebar Toggle is accessible */
+        /* ── Header chrome ── */
         [data-testid="stHeader"] {
             background-color: transparent !important;
             border-bottom: none !important;
@@ -178,11 +162,140 @@ def inject_custom_css():
             border-radius: 4px !important;
             margin-top: 5px !important;
         }
-        [data-testid="stDecoration"] {
-            display: none !important;
+        [data-testid="stDecoration"] { display:none !important; }
+        #MainMenu { visibility:hidden; }
+        footer     { visibility:hidden; }
+
+        /* ── Responsive layout utilities ── */
+        /* Table wrappers — always allow horizontal scroll */
+        .tbl-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            width: 100%;
         }
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
+        /* Trade-card data grid — CSS class (override inline grid) */
+        .trade-data-grid {
+            display: grid !important;
+            grid-template-columns: repeat(6, 1fr) !important;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+
+        /* ══ TABLET  ≤ 900px ══ */
+        @media (max-width: 900px) {
+            .main .block-container {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                max-width: 100% !important;
+            }
+            .stTabs [data-baseweb="tab"] {
+                height: 40px !important;
+                padding: 0 14px !important;
+                font-size: 0.78rem !important;
+            }
+            [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
+        }
+
+        /* ══ MOBILE  ≤ 768px ══ */
+        @media (max-width: 768px) {
+            /* 1. Shrink main container padding */
+            .main .block-container {
+                padding-top: 0.5rem !important;
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+                max-width: 100vw !important;
+            }
+
+            /* 2. Stack Streamlit columns (min 2-per-row) */
+            [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 8px !important;
+            }
+            [data-testid="column"] {
+                min-width: calc(50% - 4px) !important;
+                flex: 1 1 calc(50% - 4px) !important;
+                width: auto !important;
+            }
+
+            /* 3. Compact tabs */
+            .stTabs [data-baseweb="tab-list"] {
+                gap: 4px !important;
+                padding: 5px !important;
+                margin-bottom: 14px !important;
+                border-radius: 10px !important;
+            }
+            .stTabs [data-baseweb="tab"] {
+                height: 36px !important;
+                padding: 0 10px !important;
+                font-size: 0.7rem !important;
+            }
+
+            /* 4. Scale metrics */
+            [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+            [data-testid="stMetricLabel"] { font-size: 0.65rem !important; letter-spacing:0 !important; }
+            [data-testid="metric-container"] { padding: 8px !important; }
+
+            /* 5. Trade data grid: 6 → 3 cols */
+            .trade-data-grid {
+                grid-template-columns: repeat(3, 1fr) !important;
+            }
+
+            /* 6. Tables: min-width keeps content readable, wrapper scrolls */
+            .pos-tbl { min-width: 560px; }
+            .sig-tbl { min-width: 460px; }
+
+            /* 7. Sidebar overlay width on mobile */
+            [data-testid="stSidebar"][aria-expanded="true"] {
+                width: 85vw !important;
+                max-width: 320px !important;
+            }
+
+            /* 8. Buttons */
+            .stButton > button {
+                font-size: 0.8rem !important;
+                padding: 0.4rem 0.8rem !important;
+                min-height: 44px;
+            }
+
+            /* 9. Inputs / sliders */
+            [data-testid="stSlider"] label { font-size: 0.8rem !important; }
+
+            /* 10. Plotly charts — cap height on mobile */
+            .js-plotly-plot { max-height: 300px; overflow: hidden; }
+
+            /* 11. Spacing */
+            hr { margin: 0.5rem 0 !important; }
+            h1 { font-size: 1.4rem !important; }
+            h2 { font-size: 1.15rem !important; }
+            h3 { font-size: 1rem !important; }
+        }
+
+        /* ══ SMALL MOBILE  ≤ 480px ══ */
+        @media (max-width: 480px) {
+            /* Single-column everything */
+            [data-testid="column"] {
+                min-width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+
+            /* Trade grid: 3 → 2 cols */
+            .trade-data-grid {
+                grid-template-columns: repeat(2, 1fr) !important;
+            }
+
+            [data-testid="stMetricValue"] { font-size: 1rem !important; }
+
+            .stTabs [data-baseweb="tab"] {
+                height: 32px !important;
+                padding: 0 8px !important;
+                font-size: 0.62rem !important;
+            }
+
+            .main .block-container {
+                padding-left: 0.25rem !important;
+                padding-right: 0.25rem !important;
+            }
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -196,6 +309,15 @@ try:
 except Exception as e:
     CONFIG_OK = False
     CONFIG_ERR = str(e)
+
+# ── Trading universe (read from settings.yaml) ────────────────────────────────
+_ROOT = Path(__file__).parent.parent.parent
+try:
+    import yaml as _yaml
+    _cfg = _yaml.safe_load((_ROOT / "config" / "settings.yaml").read_text())
+    TRADING_SYMBOLS: list[str] = _cfg.get("trading", {}).get("symbols", ["BTC-USDC", "ETH-USDC", "SOL-USDC"])
+except Exception:
+    TRADING_SYMBOLS = ["BTC-USDC", "ETH-USDC", "SOL-USDC"]
 
 
 # ── Agent Process Control ──────────────────────────────────────────────────────
@@ -212,12 +334,28 @@ def _agent_pid() -> int | None:
 
 
 def _is_agent_alive(pid: int | None) -> bool:
-    """Return True if a process with given PID exists and is running."""
+    """Return True if a process with given PID is alive."""
     if pid is None:
         return False
     try:
-        import psutil
-        return psutil.pid_exists(pid) and psutil.Process(pid).is_running()
+        import sys
+        if sys.platform == "win32":
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if not handle:
+                return False
+            # Check exit code — STILL_ACTIVE = 259
+            exit_code = ctypes.c_ulong(0)
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return exit_code.value == 259   # STILL_ACTIVE
+        else:
+            import os
+            os.kill(pid, 0)
+            return True
     except Exception:
         return False
 
@@ -225,16 +363,39 @@ def _is_agent_alive(pid: int | None) -> bool:
 def _start_agent() -> tuple[bool, str]:
     """Spawn the agent as a detached subprocess. Returns (success, message)."""
     import subprocess, sys
+    # Idempotency: refuse to start if an agent is already alive
+    existing_pid = _agent_pid()
+    if _is_agent_alive(existing_pid):
+        return False, f"Agent already running (PID {existing_pid})"
+    # Clean up stale pid file from a previous dead process
+    _PID_FILE.unlink(missing_ok=True)
     try:
+        project_root = Path(__file__).parent.parent.parent
+        log_path = project_root / "logs" / "agent.log"
+        log_path.parent.mkdir(exist_ok=True)
+
+        # Always use the same Python that's running the dashboard
         venv_python = Path(sys.executable)
-        proc = subprocess.Popen(
-            [str(venv_python), "-m", "src.agent"],
-            cwd=str(Path(__file__).parent.parent.parent),
-            env={**__import__("os").environ, "PYTHONUTF8": "1"},
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if __import__("sys").platform == "win32" else 0,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+
+        env = {
+            **__import__("os").environ,
+            "PYTHONUTF8": "1",
+            "PYTHONUNBUFFERED": "1",
+        }
+
+        flags = 0
+        if sys.platform == "win32":
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+        with open(log_path, "a") as log_fh:
+            proc = subprocess.Popen(
+                [str(venv_python), "-u", "-m", "src.agent"],
+                cwd=str(project_root),
+                env=env,
+                creationflags=flags,
+                stdout=log_fh,
+                stderr=log_fh,
+            )
         _PID_FILE.write_text(str(proc.pid))
         return True, f"Agent started (PID {proc.pid})"
     except Exception as e:
@@ -242,11 +403,19 @@ def _start_agent() -> tuple[bool, str]:
 
 
 def _stop_agent(pid: int) -> tuple[bool, str]:
-    """Send SIGTERM to the agent process. Returns (success, message)."""
+    """Terminate the agent process. Returns (success, message)."""
     try:
-        import psutil
-        proc = psutil.Process(pid)
-        proc.terminate()
+        import sys
+        if sys.platform == "win32":
+            import ctypes
+            PROCESS_TERMINATE = 0x0001
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+            if handle:
+                ctypes.windll.kernel32.TerminateProcess(handle, 1)
+                ctypes.windll.kernel32.CloseHandle(handle)
+        else:
+            import os, signal
+            os.kill(pid, signal.SIGTERM)
         _PID_FILE.unlink(missing_ok=True)
         return True, f"Agent stopped (PID {pid})"
     except Exception as e:
@@ -301,24 +470,39 @@ def render_agent_control():
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
-def _get_engine():
-    try:
-        from sqlalchemy import create_engine
-        from src.core.config import get_settings
-        url = get_settings().database.timescale_url
-        return create_engine(url, pool_pre_ping=True)
-    except Exception:
-        return None
-
-
 def query_df(sql: str, params=None) -> pd.DataFrame:
+    """
+    Query TimescaleDB using asyncpg (no psycopg2 needed).
+    Params should use %s placeholders; they are substituted directly
+    since only safe integer/string LIMIT values are ever passed here.
+    """
     try:
-        engine = _get_engine()
-        if engine is None:
+        import asyncio
+        import asyncpg
+        from src.core.config import get_settings
+
+        # Substitute %s placeholders with actual values
+        if params:
+            for p in params:
+                sql = sql.replace("%s", str(int(p)), 1)
+
+        async def _fetch() -> list:
+            url = get_settings().database.timescale_url
+            conn = await asyncpg.connect(dsn=url)
+            try:
+                rows = await conn.fetch(sql)
+                return [dict(r) for r in rows]
+            finally:
+                await conn.close()
+
+        # Run in a dedicated thread so we never conflict with a running loop
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            rows = pool.submit(asyncio.run, _fetch()).result(timeout=10)
+
+        if not rows:
             return pd.DataFrame()
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=params)
-        return df
+        return pd.DataFrame(rows)
     except Exception:
         return pd.DataFrame()
 
@@ -336,7 +520,7 @@ def get_redis():
         return None
 
 
-_TRACKED_SYMBOLS = ["BTC-USDC", "ETH-USDC", "SOL-USDC"]
+_TRACKED_SYMBOLS = TRADING_SYMBOLS  # reads all 10 symbols from settings.yaml
 _BLOFIN_TICKER_URL = "https://openapi.blofin.com/api/v1/market/tickers"
 _PRICE_STALE_SECS = 120  # treat Redis price as stale after 2 minutes
 
@@ -498,20 +682,16 @@ def _fetch_blofin_prices() -> dict[str, dict]:
 
 
 def get_live_prices() -> dict[str, dict]:
-    """Returns tickers with smart fallback and simulation to ensure 'ticking'."""
+    """Returns tickers with smart fallback: agent Redis → REST API → stale Redis → sim."""
     now_ms = datetime.now(timezone.utc).timestamp() * 1000
     redis_prices = {}
     r = get_redis()
-    
+
     if r is not None:
         try:
             for k in r.keys("price:*"):
                 sym_raw = k.split(":", 1)[1]
-                # Standardize symbol for UI (e.g., BTCUSDC -> BTC-USDC)
-                sym = sym_raw
-                if len(sym) > 4 and "-" not in sym:
-                    sym = f"{sym[:3]}-{sym[3:]}"
-                
+                sym = sym_raw if "-" in sym_raw else f"{sym_raw[:3]}-{sym_raw[3:]}"
                 data = r.hgetall(k)
                 if data.get("close"):
                     ts = int(data.get("ts", 0))
@@ -525,18 +705,33 @@ def get_live_prices() -> dict[str, dict]:
         except Exception:
             pass
 
-    # Preference 1: Fresh Agent Data (< 15s)
-    if redis_prices and all(v["age_s"] < 15 for v in redis_prices.values()):
+    # Always seed session state from Redis so simulation has a real anchor
+    for sym, info in redis_prices.items():
+        if info["price"] > 0:
+            st.session_state.setdefault(f"sim_p_{sym}", info["price"])
+
+    # Preference 1: Fresh agent data from Redis (< 60s)
+    if redis_prices and all(v["age_s"] < 60 for v in redis_prices.values()):
         return redis_prices
 
-    # Preference 2: Live REST Data (or Sim Fallback)
+    # Preference 2: Moderately stale Redis (< 30 min) — avoid extra REST calls
+    # that could worsen BloFin rate-limiting and delay WS reconnection
+    if redis_prices and all(v["age_s"] < 1800 for v in redis_prices.values()):
+        return {sym: {**info, "source": "stale"} for sym, info in redis_prices.items()}
+
+    # Preference 3: Live REST API (only when Redis is very stale or absent)
     live = _fetch_blofin_prices()
-    
-    # Update session state for future simulation drift
-    for sym, info in live.items():
-        if sym != "_rate_limited" and info["price"] > 0:
+    valid = {k: v for k, v in live.items() if k != "_rate_limited" and v.get("price", 0) > 0}
+    if valid:
+        for sym, info in valid.items():
             st.session_state[f"sim_p_{sym}"] = info["price"]
-            
+        return live
+
+    # Preference 4: Any Redis prices (no matter how stale — better than 0.0)
+    if redis_prices:
+        return {sym: {**info, "source": "stale"} for sym, info in redis_prices.items()}
+
+    # Last resort: simulation drift (live dict has sim/error entries from _fetch_blofin_prices)
     return live
 
 
@@ -609,10 +804,10 @@ def render_header():
     cols = st.columns([4, 2])
     with cols[0]:
         st.markdown(f"""
-            <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
-                <h1 style="margin: 0; color: #ffffff; font-weight: 800; letter-spacing: -1px;">Crypto<span style="color: #00ffa3;">Agent</span></h1>
-                <div style="height: 24px; width: 1px; background-color: #2d3139;"></div>
-                <span style="color: #848e9c; font-size: 0.9rem; font-weight: 500;">Trading Intelligence Terminal v2.0</span>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+                <h1 style="margin:0;color:#ffffff;font-weight:800;letter-spacing:-1px;font-size:clamp(1.2rem,4vw,2rem);">Crypto<span style="color:#00ffa3;">Agent</span></h1>
+                <div style="height:20px;width:1px;background-color:#2d3139;"></div>
+                <span style="color:#848e9c;font-size:clamp(0.7rem,2vw,0.9rem);font-weight:500;">Trading Intelligence Terminal v2.0</span>
             </div>
         """, unsafe_allow_html=True)
     
@@ -622,9 +817,9 @@ def render_header():
         updated_at = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
         
         st.markdown(f"""
-            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 5px;">
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;padding-top:4px;">
                 <div class="mode-badge {badge_class}">{mode} MODE ACTIVE</div>
-                <div style="color: #848e9c; font-size: 0.75rem;">Last Updated: {updated_at}</div>
+                <div style="color:#848e9c;font-size:0.72rem;">Updated: {updated_at}</div>
             </div>
         """, unsafe_allow_html=True)
 
@@ -670,108 +865,219 @@ def render_live_prices():
 
 @st.fragment(run_every="2s")
 def render_price_charts(symbols: list[str] = None):
-    """Render high-frequency price charts."""
-    st.markdown("<h3 style='color: #ffffff;'>Market Analysis</h3>", unsafe_allow_html=True)
-    
+    """Render exchange-quality TradingView charts."""
+    st.markdown("<h3 style='color:#ffffff;margin-bottom:8px'>Market Analysis</h3>", unsafe_allow_html=True)
+
     if symbols is None:
         symbols = _TRACKED_SYMBOLS
-    
-    c1, c2 = st.columns([1, 1])
+
+    c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        selected = st.selectbox("Market Selection", symbols, label_visibility="collapsed")
+        selected  = st.selectbox("Symbol",   symbols,                               label_visibility="collapsed")
     with c2:
-        timeframe = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "4h", "1d"], index=2, label_visibility="collapsed")
-    
+        timeframe = st.selectbox("Interval", ["1m","3m","5m","15m","1h","4h"],      index=3, label_visibility="collapsed")
+    with c3:
+        bars      = st.selectbox("Bars",     [100, 200, 300, 500],                  index=1, label_visibility="collapsed")
+
+    df = fetch_price_history(selected, timeframe=timeframe, bars=bars)
+    if df is None or df.empty:
+        st.warning(f"No data for {selected} {timeframe}. Waiting for candles to accumulate.")
+        return
+
     try:
-        df = fetch_price_history(selected, bars=150)
-        
-        if df is None or df.empty:
-            st.warning(f"No historical data for {selected}. Please wait for candles to accumulate.")
-            return
+        # ── Timestamps → Unix seconds ─────────────────────────────────────────────
+        df["ts"] = df["time"].apply(lambda x: int(x.timestamp()) if hasattr(x, "timestamp") else int(pd.Timestamp(x).timestamp()))
 
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
+        # ── Price precision (coins < $1 need more decimals) ───────────────────────
+        last_close = float(df["close"].iloc[-1])
+        if last_close >= 1000:
+            price_prec, price_move = 2, 0.01
+        elif last_close >= 1:
+            price_prec, price_move = 4, 0.0001
+        else:
+            price_prec, price_move = 6, 0.000001
 
-        # Create subplots: Candlestick and Volume
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                           vertical_spacing=0.03, row_heights=[0.7, 0.3])
+        # ── Candle data ───────────────────────────────────────────────────────────
+        candle_data = [
+            {"time": int(r.ts),
+             "open":  round(float(r.open),  price_prec),
+             "high":  round(float(r.high),  price_prec),
+             "low":   round(float(r.low),   price_prec),
+             "close": round(float(r.close), price_prec)}
+            for r in df.itertuples()
+        ]
 
-        # Candlestick with thicker lines and vibrant body colors
-        fig.add_trace(go.Candlestick(
-            x=df['time'],
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name='Price',
-            increasing_line_color='#00ffa3',
-            decreasing_line_color='#ff3b30',
-            increasing_fillcolor='rgba(0, 255, 163, 0.4)',
-            decreasing_fillcolor='rgba(255, 59, 48, 0.4)',
-            line=dict(width=1.5)
-        ), row=1, col=1)
+        # ── Volume (overlaid in main chart via priceScaleId="vol") ────────────────
+        vol_data = [
+            {"time": int(r.ts),
+             "value": round(float(r.volume), 2),
+             "color": "rgba(38,166,154,0.5)" if float(r.close) >= float(r.open) else "rgba(239,83,80,0.5)"}
+            for r in df.itertuples()
+        ]
 
-        # 20-EMA Technical Indicator
-        df['ema'] = df['close'].ewm(span=20).mean()
-        fig.add_trace(go.Scatter(
-            x=df['time'], y=df['ema'],
-            line=dict(color='#f0b90b', width=1.5),
-            name='EMA 20',
-            opacity=0.8
-        ), row=1, col=1)
+        # ── EMAs ──────────────────────────────────────────────────────────────────
+        def _ema(span, color, width=1):
+            vals = df["close"].ewm(span=span, adjust=False).mean()
+            data = [{"time": int(t), "value": round(float(v), price_prec)}
+                    for t, v in zip(df["ts"], vals) if not pd.isna(v)]
+            return {"type": "Line", "data": data,
+                    "options": {"color": color, "lineWidth": width,
+                                "priceLineVisible": False, "lastValueVisible": False,
+                                "crosshairMarkerVisible": False}}
 
-        # Optimized Volume Display
-        vol_colors = ['rgba(0, 255, 163, 0.4)' if row['close'] >= row['open'] else 'rgba(255, 59, 48, 0.4)' for _, row in df.iterrows()]
-        fig.add_trace(go.Bar(
-            x=df['time'],
-            y=df['volume'],
-            name='Volume',
-            marker_color=vol_colors,
-            marker_line_width=0
-        ), row=2, col=1)
+        # ── Bollinger Bands (20,2) ────────────────────────────────────────────────
+        mid = df["close"].rolling(20).mean()
+        std = df["close"].rolling(20).std()
+        def _bb_series(vals):
+            return [{"time": int(t), "value": round(float(v), price_prec)}
+                    for t, v in zip(df["ts"], vals) if not pd.isna(v)]
 
-        # Advanced Layout Styling
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            xaxis_rangeslider_visible=False,
-            height=650,
-            margin=dict(l=10, r=10, t=10, b=10),
-            showlegend=False,
-            font=dict(color="#ffffff", size=11),
-            hovermode='x unified'
-        )
-        
-        fig.update_xaxes(showgrid=True, gridcolor='rgba(255,255,255,0.03)', zeroline=False)
-        fig.update_yaxes(showgrid=True, gridcolor='rgba(255,255,255,0.08)', zeroline=False)
+        # ── RSI (14) ──────────────────────────────────────────────────────────────
+        delta = df["close"].diff()
+        gain  = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+        loss  = (-delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        rsi   = (100 - 100 / (1 + gain / loss.replace(0, 1e-9))).round(2)
+        rsi_data = [{"time": int(t), "value": float(v)}
+                    for t, v in zip(df["ts"], rsi) if not pd.isna(v)]
 
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
+        # ── Theme ─────────────────────────────────────────────────────────────────
+        _bg, _grid, _border, _text = "#0d1117", "rgba(255,255,255,0.04)", "rgba(255,255,255,0.12)", "#d1d4dc"
+        _up, _dn = "#26a69a", "#ef5350"
+
+        _layout  = {"background": {"type": "solid", "color": _bg}, "textColor": _text, "fontSize": 11}
+        _gridcfg = {"vertLines": {"color": _grid, "style": 1}, "horzLines": {"color": _grid, "style": 1}}
+        _ts_main = {"borderColor": _border, "timeVisible": True, "secondsVisible": False, "barSpacing": 8, "minBarSpacing": 2}
+        _ts_hide = {"visible": False}
+
+        # ── Chart 1: Price + Volume overlay ───────────────────────────────────────
+        # Volume is overlaid at bottom 20% using a separate price scale "vol"
+        main_chart = {
+            "chart": {
+                "height": 460,
+                "layout": _layout,
+                "grid":   _gridcfg,
+                "crosshair": {"mode": 1},
+                "rightPriceScale": {
+                    "borderColor": _border,
+                    "scaleMargins": {"top": 0.05, "bottom": 0.22},  # leave room for vol
+                },
+                "timeScale": _ts_main,
+            },
+            "series": [
+                # Candlestick
+                {
+                    "type": "Candlestick",
+                    "data": candle_data,
+                    "options": {
+                        "upColor":       _up,
+                        "downColor":     _dn,
+                        "borderVisible": False,   # solid bodies, no border
+                        "wickUpColor":   _up,
+                        "wickDownColor": _dn,
+                        "priceFormat":   {"type": "price", "precision": price_prec, "minMove": price_move},
+                    },
+                },
+                # Bollinger upper
+                {"type": "Line", "data": _bb_series(mid + 2*std),
+                 "options": {"color": "rgba(180,180,255,0.35)", "lineWidth": 1, "lineStyle": 2,
+                             "priceLineVisible": False, "lastValueVisible": False, "crosshairMarkerVisible": False}},
+                # Bollinger lower
+                {"type": "Line", "data": _bb_series(mid - 2*std),
+                 "options": {"color": "rgba(180,180,255,0.35)", "lineWidth": 1, "lineStyle": 2,
+                             "priceLineVisible": False, "lastValueVisible": False, "crosshairMarkerVisible": False}},
+                # EMA 9 / 21 / 50
+                _ema(9,   "#5eead4", 1),
+                _ema(21,  "#f0b90b", 1),
+                _ema(50,  "#fb923c", 1),
+                # Volume overlay — bottom 20%
+                {
+                    "type": "Histogram",
+                    "data": vol_data,
+                    "options": {
+                        "priceFormat":  {"type": "volume"},
+                        "priceScaleId": "vol",
+                    },
+                    "priceScale": {
+                        "scaleMargins": {"top": 0.82, "bottom": 0.0},
+                        "borderVisible": False,
+                    },
+                },
+            ],
+        }
+
+        # ── Chart 2: RSI (no x-axis — seamlessly stacked below) ──────────────────
+        rsi_chart = {
+            "chart": {
+                "height": 110,
+                "layout": _layout,
+                "grid":   _gridcfg,
+                "crosshair": {"mode": 1},
+                "rightPriceScale": {
+                    "borderColor": _border,
+                    "scaleMargins": {"top": 0.1, "bottom": 0.1},
+                },
+                "timeScale": _ts_hide,
+            },
+            "series": [
+                {"type": "Line", "data": rsi_data,
+                 "options": {"color": "#a78bfa", "lineWidth": 1,
+                             "priceLineVisible": False, "lastValueVisible": True,
+                             "title": "RSI 14",
+                             "priceFormat": {"type": "price", "precision": 1, "minMove": 0.1}}},
+            ],
+        }
+
+        from streamlit_lightweight_charts import renderLightweightCharts
+        renderLightweightCharts([main_chart, rsi_chart], key=f"tv_{selected}_{timeframe}_{bars}")
+
+        # ── OHLCV bar ─────────────────────────────────────────────────────────────
+        last = df.iloc[-1]
+        chg  = (float(last["close"]) - float(last["open"])) / float(last["open"]) * 100
+        up   = chg >= 0
+        fmt  = f"{{:.{price_prec}f}}"
+        cols = st.columns(5)
+        labels = ["Open", "High", "Low", "Close", "Change"]
+        values = [fmt.format(float(last["open"])),  fmt.format(float(last["high"])),
+                  fmt.format(float(last["low"])),   fmt.format(float(last["close"])),
+                  f"{'%+.2f' % chg}%"]
+        for col, label, val in zip(cols, labels, values):
+            vc = ("#26a69a" if up else "#ef5350") if label == "Change" else "#e2e8f0"
+            col.markdown(
+                f"<div style='text-align:center;padding:6px 0;"
+                f"background:#161b22;border-radius:6px;border:1px solid #30363d'>"
+                f"<div style='font-size:10px;color:#6b7280;margin-bottom:2px'>{label}</div>"
+                f"<div style='font-size:13px;font-weight:600;color:{vc}'>{val}</div></div>",
+                unsafe_allow_html=True)
+
     except Exception as e:
-        st.error(f"Chart Render Error: {e}")
+        st.error(f"Chart error: {e}")
 
 
-def fetch_price_history(symbol: str, bars: int = 100) -> pd.DataFrame:
-    """Fetch price history from database."""
-    try:
-        engine = _get_engine()
-        if engine is None:
-            return pd.DataFrame()
-        
-        query = f"""
-            SELECT time, open, high, low, close, volume
-            FROM candles
-            WHERE symbol = '{symbol.replace('-', '')}' AND timeframe = '15m'
-            ORDER BY time DESC
-            LIMIT {bars}
-        """
-        df = pd.read_sql(query, engine)
-        if not df.empty:
-            df = df.sort_values("time")
-        return df
-    except Exception:
-        return pd.DataFrame()
+def fetch_price_history(symbol: str, timeframe: str = "15m", bars: int = 200) -> pd.DataFrame:
+    """Fetch OHLCV history from TimescaleDB — only properly-aligned closed candles."""
+    # Build timeframe alignment filter so malformed WS entries (wrong timestamps) are excluded
+    _tf_filters = {
+        "1m":  "EXTRACT(SECOND FROM time) = 0",
+        "3m":  "EXTRACT(SECOND FROM time) = 0 AND EXTRACT(MINUTE FROM time)::int % 3 = 0",
+        "5m":  "EXTRACT(SECOND FROM time) = 0 AND EXTRACT(MINUTE FROM time)::int % 5 = 0",
+        "15m": "EXTRACT(SECOND FROM time) = 0 AND EXTRACT(MINUTE FROM time) IN (0,15,30,45)",
+        "1h":  "EXTRACT(SECOND FROM time) = 0 AND EXTRACT(MINUTE FROM time) = 0",
+        "4h":  "EXTRACT(SECOND FROM time) = 0 AND EXTRACT(MINUTE FROM time) = 0 AND EXTRACT(HOUR FROM time)::int % 4 = 0",
+    }
+    align_filter = _tf_filters.get(timeframe, "1=1")
+    sql = f"""
+        SELECT time, open, high, low, close, volume
+        FROM candles
+        WHERE symbol = '{symbol}' AND timeframe = '{timeframe}'
+          AND closed = true
+          AND {align_filter}
+        ORDER BY time DESC
+        LIMIT {bars}
+    """
+    df = query_df(sql)
+    if not df.empty:
+        df = df.sort_values("time").reset_index(drop=True)
+    return df
 
 
 @st.fragment(run_every="5s")
@@ -890,7 +1196,7 @@ def render_paper_trades():
           </div>
 
           <!-- Data grid -->
-          <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-bottom:14px;">
+          <div class="trade-data-grid">
             <div>
               <div style="color:#5c6672; font-size:0.68rem; text-transform:uppercase; margin-bottom:3px;">Entry</div>
               <div style="color:#d1d4dc; font-size:0.88rem; font-weight:600;">${entry:,.4f}</div>
@@ -1060,6 +1366,19 @@ def render_positions():
 
     prices = get_live_prices()
 
+    # Show stale price warning if WS is down
+    if prices:
+        sample = next(iter(prices.values()))
+        age_s = sample.get("age_s", 0)
+        source = sample.get("source", "")
+        if age_s > 60:
+            age_min = int(age_s / 60)
+            st.warning(
+                f"Live feed reconnecting (429 rate limit) — prices from cache "
+                f"({age_min}m ago). P&L is approximate.",
+                icon="⚠",
+            )
+
     # Live exchange: use positions table
     pos = fetch_positions()
 
@@ -1155,6 +1474,7 @@ def render_positions():
     .pos-tbl td {{padding:10px 12px;border-bottom:1px solid #1a1d22;vertical-align:middle;}}
     .pos-tbl tr:hover td {{background:#1a1d22;}}
     </style>
+    <div class="tbl-wrap">
     <table class="pos-tbl">
       <thead><tr>
         <th>Symbol</th><th>Side</th><th>Entry</th>
@@ -1163,6 +1483,7 @@ def render_positions():
       </tr></thead>
       <tbody>{rows}</tbody>
     </table>
+    </div>
     """, unsafe_allow_html=True)
 
 
@@ -1286,35 +1607,201 @@ def render_sentiment_data():
             </div>
             """, unsafe_allow_html=True)
     
+    # ── News NLP + AI Market Briefing (GPT-5.2) ───────────────────────────────
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-    
-    # ── Latest News ──────────────────────────────
-    st.markdown("### 📰 Latest Crypto News")
     try:
+        import json, os, re
         import requests
-        resp = requests.get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN&limit=5", timeout=5)
-        if resp.status_code == 200:
-            news_data = resp.json().get("Data", [])
-            
-            if news_data:
-                for news in news_data[:5]:
-                    title = news.get("title", "")
-                    source = news.get("source_info", {}).get("name", "Unknown")
-                    url = news.get("url", "#")
-                    categories = news.get("categories", "").split("|")[:3]
-                    
-                    st.markdown(f"""
-                    <div style="background:#161a1e;padding:12px;margin-bottom:8px;border-radius:6px;border:1px solid #2d3139;">
-                        <a href="{url}" target="_blank" style="color:#fff;text-decoration:none;font-weight:500;">{title}</a>
-                        <div style="margin-top:4px;">
-                            <span style="color:#848e9c;font-size:0.75rem;">{source}</span>
-                            {"".join(f'<span style="background:#2d3139;padding:2px 6px;margin-left:4px;border-radius:4px;font-size:0.7rem;color:#848e9c;">{c}</span>' for c in categories if c)}
-                        </div>
+        from src.data.feeds.sentiment_feed import SentimentFeed
+
+        resp20 = requests.get(
+            "https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest&limit=20",
+            timeout=8,
+        )
+        news_articles = resp20.json().get("Data", []) if resp20.status_code == 200 else []
+        article_scores = []
+        nlp_engine     = "vader+keywords"
+        market_briefing = ""
+        dominant_theme  = "neutral"
+
+        az_endpoint   = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+        az_key        = os.environ.get("AZURE_OPENAI_KEY", "")
+        az_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.2-chat")
+        az_api_ver    = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+
+        titles = [art.get("title", "") for art in news_articles[:20]]
+
+        # ── Priority 1: Azure OpenAI GPT-5.2 ─────────────────────────────────
+        if news_articles and az_endpoint and az_key:
+            try:
+                from openai import AzureOpenAI
+                client = AzureOpenAI(azure_endpoint=az_endpoint, api_key=az_key, api_version=az_api_ver)
+                numbered = "\n".join(f"{i+1}. {h}" for i, h in enumerate(titles))
+                prompt = f"""You are a professional crypto trading analyst.
+
+Analyze these {len(titles)} crypto news headlines and return a JSON object with:
+1. "scores": array of {len(titles)} floats from -1.0 (very bearish) to +1.0 (very bullish)
+2. "briefing": 2-sentence market narrative summarising sentiment and likely near-term price impact
+3. "dominant_theme": one of "strongly_bullish"|"bullish"|"neutral"|"bearish"|"strongly_bearish"
+
+Rules: "crashes through resistance to ATH" = bullish. Technical analysis articles = ±0.1 only.
+ETF approvals, institutional buying = strongly bullish. Exchange hacks, insolvency = strongly bearish.
+
+Headlines:
+{numbered}
+
+Return ONLY valid JSON."""
+                resp = client.responses.create(
+                    model=az_deployment,
+                    input=[
+                        {"role": "system", "content": "You are a crypto market sentiment analyst. Always respond with valid JSON only."},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    text={"format": {"type": "json_object"}},
+                    max_output_tokens=4000,
+                )
+                raw = json.loads(resp.output_text)
+                sc = [max(-1.0, min(1.0, float(s))) for s in raw.get("scores", [])]
+                if len(sc) == len(titles):
+                    article_scores  = sc
+                    market_briefing = raw.get("briefing", "")
+                    dominant_theme  = raw.get("dominant_theme", "neutral")
+                    nlp_engine      = "gpt-5.2"
+            except Exception:
+                pass
+
+        # ── Priority 2: Gemini fallback ───────────────────────────────────────
+        if not article_scores:
+            gemini_key = os.environ.get("GEMINI_API_KEY", "")
+            if news_articles and gemini_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_key)
+                    model = genai.GenerativeModel("gemini-2.0-flash")
+                    numbered = "\n".join(f"{i+1}. {h}" for i, h in enumerate(titles))
+                    r = model.generate_content(
+                        f"Score each headline -1 to +1 for crypto price impact. "
+                        f"Return ONLY a JSON array of {len(titles)} numbers.\n{numbered}"
+                    )
+                    match = re.search(r'\[[\s\d,.\-+]+\]', r.text.strip())
+                    if match:
+                        article_scores = [max(-1.0, min(1.0, float(s))) for s in json.loads(match.group())]
+                        nlp_engine = "gemini-2.0-flash"
+                except Exception:
+                    pass
+
+        # ── Priority 3: VADER+keywords ────────────────────────────────────────
+        if not article_scores:
+            _feed = SentimentFeed.__new__(SentimentFeed)
+            _feed._vader = None
+            try:
+                from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+                _feed._vader = SentimentIntensityAnalyzer()
+            except ImportError:
+                pass
+            for art in news_articles:
+                article_scores.append(_feed._score_text(f"{art.get('title','')} {art.get('body','')[:300]}"))
+
+        if article_scores:
+            wts = [1.0 / (1.0 + i * 0.2) for i in range(len(article_scores))]
+            news_nlp = max(-1.0, min(1.0, sum(s * w for s, w in zip(article_scores, wts)) / sum(wts)))
+        else:
+            news_nlp = 0.0
+            news_articles = []
+
+        nlp_color = "#ff4d4d" if news_nlp < -0.15 else "#f0b429" if news_nlp < 0.15 else "#00ffa3"
+        nlp_label = "Bearish" if news_nlp < -0.15 else "Neutral" if news_nlp < 0.15 else "Bullish"
+
+        # Engine badge
+        if nlp_engine == "gpt-5.2":
+            ebg = '#0a1a2e'; ecol = '#60a5fa'
+            engine_badge = f'<span style="background:{ebg};color:{ecol};font-size:0.7rem;padding:2px 8px;border-radius:10px;margin-left:8px;border:1px solid {ecol}40;">⚡ GPT-5.2</span>'
+        elif nlp_engine == "gemini-2.0-flash":
+            engine_badge = '<span style="background:#1a3a2a;color:#00ffa3;font-size:0.7rem;padding:2px 7px;border-radius:10px;margin-left:8px;">Gemini Flash</span>'
+        else:
+            engine_badge = '<span style="background:#2d3139;color:#848e9c;font-size:0.7rem;padding:2px 7px;border-radius:10px;margin-left:8px;">VADER+KW</span>'
+
+        # Theme colour
+        theme_colors = {"strongly_bullish": "#00ffa3", "bullish": "#4ade80",
+                        "neutral": "#f0b429", "bearish": "#f87171", "strongly_bearish": "#ff4d4d"}
+        theme_col = theme_colors.get(dominant_theme, "#848e9c")
+
+        st.markdown(f"""
+        <div style="background:#0d1117;padding:18px;border-radius:10px;border:1px solid #1e3a5f;margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div>
+              <span style="color:#848e9c;font-size:0.72rem;text-transform:uppercase;letter-spacing:.06em;">News Sentiment</span>
+              {engine_badge}
+            </div>
+            <span style="background:{theme_col}20;color:{theme_col};font-size:0.72rem;padding:3px 10px;
+                         border-radius:12px;border:1px solid {theme_col}60;font-weight:700;">
+              {dominant_theme.replace("_"," ").upper()}
+            </span>
+          </div>
+          <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:10px;">
+            <span style="font-size:2.2rem;font-weight:800;color:{nlp_color};">{news_nlp:+.3f}</span>
+            <span style="color:{nlp_color};font-size:0.9rem;font-weight:600;">{nlp_label}</span>
+            <span style="color:#4a5060;font-size:0.8rem;">{len(article_scores)} headlines</span>
+          </div>
+          {"" if not market_briefing else f'<div style="background:#161a1e;border-left:3px solid #60a5fa;padding:10px 14px;border-radius:0 6px 6px 0;font-size:0.8rem;color:#b0bec5;line-height:1.5;">{market_briefing}</div>'}
+        </div>
+        """, unsafe_allow_html=True)
+
+    except Exception:
+        news_articles = []
+        news_nlp = 0.0
+        article_scores = []
+
+    # ── Latest News with NLP badges ───────────────────────────────────────────
+    st.markdown("### Latest Crypto News")
+    try:
+        display_arts = news_articles[:8] if news_articles else []
+        if not display_arts:
+            import requests
+            r2 = requests.get(
+                "https://min-api.cryptocompare.com/data/v2/news/?lang=EN&limit=8", timeout=5
+            )
+            display_arts = r2.json().get("Data", []) if r2.status_code == 200 else []
+            article_scores = []
+
+        if display_arts:
+            for idx, art in enumerate(display_arts):
+                title  = art.get("title", "")
+                source = art.get("source_info", {}).get("name", "Unknown")
+                url    = art.get("url", "#")
+                cats   = art.get("categories", "").split("|")[:2]
+
+                # NLP badge for this article
+                sc = article_scores[idx] if idx < len(article_scores) else 0.0
+                if sc < -0.1:
+                    badge_c, badge_l = "#ff4d4d", f"▼ {sc:+.2f}"
+                elif sc > 0.1:
+                    badge_c, badge_l = "#00ffa3", f"▲ {sc:+.2f}"
+                else:
+                    badge_c, badge_l = "#848e9c", f"● {sc:+.2f}"
+
+                cat_html = "".join(
+                    f'<span style="background:#2d3139;padding:2px 6px;margin-left:4px;'
+                    f'border-radius:4px;font-size:0.68rem;color:#848e9c;">{c}</span>'
+                    for c in cats if c
+                )
+                st.markdown(f"""
+                <div style="background:#161a1e;padding:12px;margin-bottom:8px;border-radius:6px;border:1px solid #2d3139;">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                        <a href="{url}" target="_blank"
+                           style="color:#fff;text-decoration:none;font-weight:500;font-size:0.88rem;flex:1;">{title}</a>
+                        <span style="color:{badge_c};font-weight:700;font-size:0.78rem;
+                                     white-space:nowrap;padding:2px 6px;border:1px solid {badge_c};
+                                     border-radius:4px;">{badge_l}</span>
                     </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("No news available")
-    except Exception as e:
+                    <div style="margin-top:5px;">
+                        <span style="color:#848e9c;font-size:0.72rem;">{source}</span>{cat_html}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No news available")
+    except Exception:
         st.info("News unavailable")
 
 
@@ -1373,6 +1860,7 @@ def render_signals():
     .sig-tbl td {{padding:9px 12px;border-bottom:1px solid #1a1d22;vertical-align:middle;}}
     .sig-tbl tr:hover td {{background:#1a1d22;}}
     </style>
+    <div class="tbl-wrap">
     <table class="sig-tbl">
       <thead><tr>
         <th>Time</th><th>Symbol</th><th>Direction</th>
@@ -1380,6 +1868,7 @@ def render_signals():
       </tr></thead>
       <tbody>{rows}</tbody>
     </table>
+    </div>
     """, unsafe_allow_html=True)
 
 
@@ -1532,6 +2021,629 @@ def render_logs(n_lines: int = 150):
         st.error(f"Diagnostics error: {e}")
 
 
+# ── Agent Brain — live signal reasoning ──────────────────────────────────────
+
+@st.fragment(run_every="3s")
+def render_agent_brain():
+    """
+    Parses the agent's structured log lines and renders a live card view:
+    - Per-symbol × per-timeframe signal cards (direction, confidence, ADX, regime, ML)
+    - Decision feed: why trades are/aren't firing
+    """
+    import re
+
+    log_path = Path("logs/agent.log")
+    if not log_path.exists():
+        st.info("No agent log found. Start the agent first.")
+        return
+
+    # ── Read & clean last 1000 lines ─────────────────────────────────────────
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            raw_lines = fh.readlines()[-1000:]
+    except Exception as e:
+        st.error(f"Cannot read log: {e}")
+        return
+
+    # Strip ANSI colour codes that structlog injects
+    ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\[[0-9;]*m")
+    lines = [ANSI_RE.sub("", l) for l in raw_lines]
+
+    # ── Regex patterns ────────────────────────────────────────────────────────
+    SIG_RE = re.compile(
+        r"Signal \[([A-Z]+-[A-Z]+)/([^\]]+)\] "
+        r"dir=([+-]?\d+) conf=([\d.]+) raw=([+-]?[\d.]+) adx=([\d.]+) regime=(\w+)"
+        r"(?:.*?ml=\(([+-]?\d+),([\d.]+)%\))?"
+        r"(?:.*?lgbm=\(([+-]?\d+),([\d.]+)%\))?"
+        r"(?:.*?lstm=\(([+-]?\d+),([\d.]+)%\))?"
+    )
+    TS_RE  = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
+
+    # ── Parse signals & decision feed ─────────────────────────────────────────
+    signals: dict[tuple, dict] = {}
+    feed: list[tuple[str, str, str]] = []   # (hhmm, message, category)
+
+    for line in lines:
+        ts_m   = TS_RE.search(line)
+        ts_str = ts_m.group(1) if ts_m else ""
+        hhmm   = ts_str[11:16] if len(ts_str) >= 16 else "—"
+
+        sig_m  = SIG_RE.search(line)
+        if sig_m:
+            sym, tf = sig_m.group(1), sig_m.group(2)
+            signals[(sym, tf)] = {
+                "symbol":    sym,
+                "tf":        tf,
+                "direction": int(sig_m.group(3)),
+                "confidence": float(sig_m.group(4)),
+                "raw":       float(sig_m.group(5)),
+                "adx":       float(sig_m.group(6)),
+                "regime":    sig_m.group(7),
+                "lgbm_dir":  int(sig_m.group(8))   if sig_m.group(8)  else None,
+                "lgbm_conf": float(sig_m.group(9))  if sig_m.group(9)  else None,
+                "lstm_dir":  int(sig_m.group(10))   if sig_m.group(10) else None,
+                "lstm_conf": float(sig_m.group(11)) if sig_m.group(11) else None,
+                "ts":        hhmm,
+            }
+            continue
+
+        # Decision feed events
+        txt = line.strip()[-160:]
+        if "Trade decision received" in line:
+            feed.append((hhmm, txt, "trade"))
+        elif "Paper order" in line and ("placed" in line or "filled" in line):
+            feed.append((hhmm, txt, "order"))
+        elif "TP triggered" in line:
+            feed.append((hhmm, txt, "tp"))
+        elif "SL triggered" in line or "trailing_stop" in line:
+            feed.append((hhmm, txt, "sl"))
+        elif "Trailing stop activated" in line:
+            feed.append((hhmm, txt, "trail"))
+        elif "TFs agree" in line or "confluence" in line.lower():
+            feed.append((hhmm, txt, "confluence"))
+        elif "ADX below" in line or "funding" in line.lower() and "blocked" in line.lower():
+            feed.append((hhmm, txt, "blocked"))
+
+    # Share signal state with AI analyst fragment
+    st.session_state["_brain_signals"] = dict(signals)
+
+    # Read current threshold for card annotations (session_state always available)
+    _cur_thresh = st.session_state.get("conf_threshold_slider", 25)
+
+    # ── Helper: build a signal card ───────────────────────────────────────────
+    def _card(sig: dict | None, tf: str) -> str:
+        if sig is None:
+            return (
+                f'<div style="background:#0f1117;border:1px solid #2d3139;border-radius:10px;'
+                f'padding:14px;min-height:130px;display:flex;flex-direction:column;'
+                f'align-items:center;justify-content:center;">'
+                f'<div style="color:#848e9c;font-size:0.72rem;font-weight:600;">{tf}</div>'
+                f'<div style="color:#2d3139;font-size:0.8rem;margin-top:6px;">No data</div></div>'
+            )
+
+        d    = sig["direction"]
+        conf = sig["confidence"]
+        adx  = sig["adx"]
+        reg  = sig["regime"]
+
+        # Direction
+        if d == 1:
+            dc, di, dl = "#00ffa3", "▲", "LONG"
+        elif d == -1:
+            dc, di, dl = "#ff4d4d", "▼", "SHORT"
+        else:
+            dc, di, dl = "#606878", "●", "FLAT"
+
+        # Confidence bar colour
+        cc = "#ff4d4d" if conf < 25 else "#f0b429" if conf < 45 else "#00ffa3"
+
+        # ADX colour
+        ac = "#ff4d4d" if adx < 20 else "#f0b429" if adx < 30 else "#00ffa3"
+
+        # Regime colour
+        rc = {"trending_up": "#00ffa3", "trending_down": "#ff4d4d",
+              "volatile": "#f0b429", "ranging": "#848e9c", "breakout": "#a78bfa"}.get(reg, "#848e9c")
+
+        # ML row (only on 15m where models run)
+        ml_html = ""
+        if tf == "15m" and sig["lgbm_dir"] is not None:
+            def _arrow(v):
+                if v == 1:  return "▲", "#00ffa3"
+                if v == -1: return "▼", "#ff4d4d"
+                return "●", "#606878"
+            lg_i, lg_c = _arrow(sig["lgbm_dir"])
+            ls_i, ls_c = _arrow(sig["lstm_dir"])
+            ml_html = (
+                f'<div style="display:flex;gap:6px;margin-top:8px;font-size:0.7rem;">'
+                f'<span style="color:#848e9c;">LGBM</span>'
+                f'<span style="color:{lg_c};font-weight:700;">{lg_i} {sig["lgbm_conf"]:.0f}%</span>'
+                f'<span style="color:#848e9c;margin-left:4px;">LSTM</span>'
+                f'<span style="color:{ls_c};font-weight:700;">{ls_i} {sig["lstm_conf"]:.0f}%</span>'
+                f'</div>'
+            )
+
+        # Why no trade?
+        why = ""
+        if d == 0:
+            raw = sig.get("raw", 0.0)
+            if adx < 20:
+                why = f'<div style="color:#f0b429;font-size:0.67rem;margin-top:5px;">⚠ ADX {adx:.0f} &lt; 20 (no trend)</div>'
+            elif conf < _cur_thresh:
+                why = f'<div style="color:#848e9c;font-size:0.67rem;margin-top:5px;">⚠ Conf {conf:.1f}% &lt; threshold {_cur_thresh:.0f}%</div>'
+            elif abs(raw) < 0.02:
+                why = '<div style="color:#848e9c;font-size:0.67rem;margin-top:5px;">Raw score flat (&lt;0.02)</div>'
+            else:
+                dir_word = "LONG" if raw > 0 else "SHORT"
+                why = f'<div style="color:#f0b429;font-size:0.67rem;margin-top:5px;">HTF disagrees — {dir_word} 15m vs HTF</div>'
+
+        return (
+            f'<div style="background:#0f1117;border:1px solid #2d3139;border-radius:10px;padding:14px;">'
+            f'<div style="display:flex;justify-content:space-between;margin-bottom:6px;">'
+            f'  <span style="color:#848e9c;font-size:0.72rem;font-weight:600;">{tf}</span>'
+            f'  <span style="color:#3a4050;font-size:0.65rem;">{sig["ts"]}</span>'
+            f'</div>'
+            f'<div style="font-size:1.1rem;font-weight:800;color:{dc};letter-spacing:1px;">{di} {dl}</div>'
+            f'<div style="margin:6px 0;background:#1e2329;border-radius:4px;height:4px;">'
+            f'  <div style="background:{cc};height:100%;width:{min(conf,100):.0f}%;"></div></div>'
+            f'<div style="display:flex;justify-content:space-between;font-size:0.73rem;">'
+            f'  <span style="color:{cc};font-weight:700;">{conf:.1f}%</span>'
+            f'  <span style="color:{ac};">ADX {adx:.0f}</span>'
+            f'  <span style="color:{rc};font-size:0.65rem;">{reg}</span>'
+            f'</div>'
+            f'{ml_html}{why}</div>'
+        )
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+    st.markdown(
+        '<p style="color:#848e9c;font-size:0.8rem;margin-bottom:16px;">'
+        'Live signal reasoning — auto-refreshes every 3 s from agent.log</p>',
+        unsafe_allow_html=True,
+    )
+
+    symbols = TRADING_SYMBOLS
+    tfs     = ["1m", "3m", "5m", "15m", "1h", "4h"]
+
+    # ── Threshold slider (writes to config/runtime.json → agent picks up live) ─
+    import json as _json
+
+    _runtime_path = Path("config/runtime.json")
+    MIN_CONF = 25  # safe default — overwritten by slider below
+    _saved_thresh = 25.0
+    try:
+        if _runtime_path.exists():
+            _saved_thresh = float(_json.loads(_runtime_path.read_text()).get("min_confidence_threshold", 25.0))
+    except Exception:
+        pass
+
+    try:
+        col_sl, col_info = st.columns([3, 1])
+        with col_sl:
+            MIN_CONF = st.slider(
+                "Confidence Threshold (yellow line)",
+                min_value=1, max_value=80,
+                value=int(_saved_thresh),
+                step=1,
+                help="Agent only takes a trade when 15m confidence ≥ this value. "
+                     "Written to config/runtime.json — agent picks it up on the next candle.",
+                key="conf_threshold_slider",
+            )
+        with col_info:
+            st.markdown(
+                f'<div style="margin-top:28px;padding:6px 12px;border-radius:8px;'
+                f'background:{"#0a2218" if MIN_CONF <= 25 else "#2b1c08" if MIN_CONF <= 40 else "#1e0a0a"};'
+                f'border:1px solid {"#00ffa3" if MIN_CONF <= 25 else "#f0b429" if MIN_CONF <= 40 else "#ff4d4d"}40;'
+                f'font-size:0.78rem;font-weight:700;'
+                f'color:{"#00ffa3" if MIN_CONF <= 25 else "#f0b429" if MIN_CONF <= 40 else "#ff4d4d"};">'
+                f'{"NORMAL" if MIN_CONF <= 25 else "STRICT" if MIN_CONF <= 40 else "VERY STRICT"} — {MIN_CONF}%'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    except Exception:
+        pass  # slider unavailable during fragment pre-render — MIN_CONF stays at default
+
+    # Persist to runtime.json so the agent reads it
+    try:
+        _runtime_path.parent.mkdir(exist_ok=True)
+        _runtime_path.write_text(_json.dumps({"min_confidence_threshold": MIN_CONF}, indent=2))
+    except Exception:
+        pass
+
+    # ── Trade Score Meters ────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-size:0.78rem;font-weight:700;color:#848e9c;'
+        'text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;margin-top:16px;">'
+        'Trade Score — Confidence vs Threshold</div>',
+        unsafe_allow_html=True,
+    )
+
+    for sym in symbols:
+        s1m  = signals.get((sym, "1m"))
+        s3m  = signals.get((sym, "3m"))
+        s5m  = signals.get((sym, "5m"))
+        s15  = signals.get((sym, "15m"))
+        s1h  = signals.get((sym, "1h"))
+        s4h  = signals.get((sym, "4h"))
+
+        d1m  = s1m["direction"]  if s1m  else 0
+        d3m  = s3m["direction"]  if s3m  else 0
+        d5m  = s5m["direction"]  if s5m  else 0
+        d15  = s15["direction"]  if s15  else 0
+        c15  = s15["confidence"] if s15  else 0.0
+        d1h  = s1h["direction"]  if s1h  else 0
+        d4h  = s4h["direction"]  if s4h  else 0
+
+        # How many HTF TFs agree with 15m direction?
+        htf_agree = sum(1 for d in [d1h, d4h] if d == d15 and d15 != 0)
+
+        conf_ok   = c15 >= MIN_CONF and d15 != 0
+        conf_ok_raw = c15 >= MIN_CONF  # regardless of direction
+        all_tf_agree = htf_agree >= 1
+        ready     = conf_ok and all_tf_agree
+
+        # Direction colour + label
+        if d15 == 1:
+            dir_color, dir_icon, dir_label = "#00ffa3", "▲", "LONG"
+        elif d15 == -1:
+            dir_color, dir_icon, dir_label = "#ff4d4d", "▼", "SHORT"
+        else:
+            dir_color, dir_icon, dir_label = "#606878", "●", "FLAT"
+
+        # Bar fill colour
+        if ready:
+            bar_color = "#00ffa3"
+        elif conf_ok:
+            bar_color = "#f0b429"
+        elif d15 != 0:
+            bar_color = "#f04950"
+        else:
+            bar_color = "#3a4050"
+
+        # Status badge
+        if ready:
+            sb_bg, sb_col, sb_txt = "#0a2218", "#00ffa3", "● TRADE READY"
+        elif conf_ok and not all_tf_agree:
+            sb_bg, sb_col, sb_txt = "#2b1c08", "#f0b429", "◑ NO CONFLUENCE"
+        elif d15 != 0 and not conf_ok:
+            sb_bg, sb_col, sb_txt = "#1e1218", "#ff4d4d", "▸ BELOW THRESHOLD"
+        else:
+            sb_bg, sb_col, sb_txt = "#141720", "#606878", "◌ FLAT / WAITING"
+
+        # TF agreement badges
+        def _tf_b(d_val, tf_name, ref_dir):
+            if d_val == 1:   ic, fc = "▲", "#00ffa3"
+            elif d_val == -1: ic, fc = "▼", "#ff4d4d"
+            else:            ic, fc = "●", "#4a5060"
+            border = "1px solid #00ffa3" if (d_val == ref_dir and ref_dir != 0) else "1px solid #2d3139"
+            return (
+                f'<span style="border:{border};border-radius:5px;'
+                f'padding:2px 7px;font-size:0.7rem;color:{fc};margin-right:5px;">'
+                f'{ic} {tf_name}</span>'
+            )
+
+        tf_badges = (_tf_b(d1m, "1m", d15) + _tf_b(d3m, "3m", d15) + _tf_b(d5m, "5m", d15)
+                     + _tf_b(d15, "15m", d15) + _tf_b(d1h, "1h", d15) + _tf_b(d4h, "4h", d15))
+
+        # Bar fill: clamp to 100, threshold marker at MIN_CONF%
+        fill_pct   = min(c15, 100.0)
+        thresh_pct = MIN_CONF  # always 25%
+
+        st.markdown(f"""
+        <div style="background:#0f1117;border:1px solid {'#1a3a28' if ready else '#2d3139'};
+                    border-radius:10px;padding:14px 18px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <div>
+              <span style="font-size:0.9rem;font-weight:800;color:#d1d4dc;letter-spacing:.5px;">{sym}</span>
+              <span style="margin-left:10px;font-size:0.85rem;font-weight:700;color:{dir_color};">
+                {dir_icon} {dir_label}</span>
+              <span style="margin-left:10px;font-size:0.72rem;color:{dir_color};">{c15:.1f}%</span>
+            </div>
+            <div style="background:{sb_bg};color:{sb_col};padding:4px 12px;border-radius:20px;
+                        font-size:0.75rem;font-weight:700;border:1px solid {sb_col}40;">
+              {sb_txt}
+            </div>
+          </div>
+
+          <!-- Score bar -->
+          <div style="position:relative;background:#1e2329;border-radius:6px;height:10px;margin-bottom:6px;">
+            <!-- Fill -->
+            <div style="position:absolute;left:0;top:0;bottom:0;width:{fill_pct:.1f}%;
+                        background:{bar_color};border-radius:6px;
+                        box-shadow:{'0 0 8px ' + bar_color + '80' if ready else 'none'};
+                        transition:width .4s ease;"></div>
+            <!-- Threshold marker -->
+            <div style="position:absolute;left:{thresh_pct:.1f}%;top:-4px;bottom:-4px;
+                        width:2px;background:#f0b429;border-radius:2px;opacity:0.9;"></div>
+          </div>
+
+          <!-- Scale labels -->
+          <div style="position:relative;height:14px;margin-bottom:8px;">
+            <span style="position:absolute;left:0;font-size:0.62rem;color:#4a5060;">0</span>
+            <span style="position:absolute;left:{thresh_pct:.1f}%;transform:translateX(-50%);
+                         font-size:0.62rem;color:#f0b42990;">│ {thresh_pct:.0f}%</span>
+            <span style="position:absolute;right:0;font-size:0.62rem;color:#4a5060;">100</span>
+          </div>
+
+          <!-- TF alignment badges -->
+          <div style="display:flex;align-items:center;gap:4px;">
+            <span style="font-size:0.68rem;color:#4a5060;margin-right:4px;">TF ALIGN</span>
+            {tf_badges}
+            <span style="margin-left:auto;font-size:0.68rem;color:#4a5060;">
+              {htf_agree}/2 HTF agree</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div style="margin-bottom:20px;"></div>', unsafe_allow_html=True)
+
+    # ── Signal Cards ──────────────────────────────────────────────────────────
+    for sym in symbols:
+        any_sig = any(signals.get((sym, tf)) for tf in tfs)
+        sym_label_color = "#f0f0f0" if any_sig else "#4a5060"
+        st.markdown(
+            f'<div style="font-size:0.85rem;font-weight:700;color:{sym_label_color};'
+            f'margin:16px 0 8px 2px;letter-spacing:0.5px;">{sym}</div>',
+            unsafe_allow_html=True,
+        )
+        cols = st.columns(6)
+        for i, tf in enumerate(tfs):
+            cols[i].markdown(_card(signals.get((sym, tf)), tf), unsafe_allow_html=True)
+
+    # ── Decision feed ─────────────────────────────────────────────────────────
+    if feed:
+        st.markdown(
+            '<div style="margin-top:24px;margin-bottom:8px;font-size:0.82rem;'
+            'font-weight:700;color:#d1d4dc;">Decision Feed</div>',
+            unsafe_allow_html=True,
+        )
+        cat_colors = {
+            "trade": "#00ffa3", "order": "#00ffa3",
+            "tp": "#00ffa3",    "sl": "#ff4d4d",
+            "trail": "#a78bfa", "confluence": "#f0b429",
+            "blocked": "#f0b429",
+        }
+        for hhmm, txt, cat in reversed(feed[-20:]):
+            col = cat_colors.get(cat, "#848e9c")
+            # Strip structlog noise — keep the human-readable part after "] "
+            clean = re.sub(r"^\S+\s+", "", txt)   # drop leading timestamp chunk
+            st.markdown(
+                f'<div style="font-family:monospace;font-size:0.73rem;color:{col};'
+                f'padding:3px 0;border-bottom:1px solid #1a1d22;">'
+                f'<span style="color:#4a5060;">{hhmm}</span>  {clean}</div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown(
+            '<div style="color:#3a4050;font-size:0.8rem;margin-top:20px;">'
+            'Waiting for first signal cycle...</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ── AI Trade Analyst — GPT-5.2 live trade readiness window ───────────────────
+
+@st.fragment(run_every="30s")
+def render_ai_thinking():
+    """
+    Live AI analyst: GPT-5.2 reads current signal state for all symbols
+    and explains what conditions are needed for a trade to fire.
+    Renders every 30s; GPT API is called at most once per 60s (cached).
+    """
+    import json as _json, time as _time, os as _os
+
+    signals: dict = st.session_state.get("_brain_signals", {})
+    thresh  = st.session_state.get("conf_threshold_slider", 25)
+    tfs     = ["1m", "3m", "5m", "15m", "1h", "4h"]
+    symbols = TRADING_SYMBOLS
+
+    # ── Section header ────────────────────────────────────────────────────────
+    now_utc = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:12px;margin:28px 0 14px 0;">'
+        f'<div style="font-size:0.95rem;font-weight:800;color:#e8e8e8;letter-spacing:0.5px;">🤖 AI TRADE ANALYST</div>'
+        f'<div style="font-size:0.7rem;padding:3px 9px;background:#0d1520;border:1px solid #60a5fa40;'
+        f'border-radius:20px;color:#60a5fa;font-weight:700;">⚡ GPT-5.2</div>'
+        f'<div style="margin-left:auto;font-size:0.68rem;color:#3a4050;">Updated {now_utc}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not signals:
+        st.markdown(
+            '<div style="color:#3a4050;font-size:0.78rem;padding:8px 0;">'
+            'Waiting for first signal cycle...</div>', unsafe_allow_html=True)
+        return
+
+    # ── Build signal summary for GPT prompt ──────────────────────────────────
+    def _sig_line(sym, tf):
+        s = signals.get((sym, tf))
+        if not s:
+            return f"  {tf}: NO DATA"
+        d_str = {1:"LONG",-1:"SHORT",0:"FLAT"}.get(s["direction"],"FLAT")
+        ml_part = ""
+        if tf == "15m" and s.get("lgbm_dir") is not None:
+            lg = {1:"LONG",-1:"SHORT",0:"FLAT"}.get(s["lgbm_dir"],"?")
+            ls = {1:"LONG",-1:"SHORT",0:"FLAT"}.get(s["lstm_dir"],"?")
+            ml_part = f" | LGBM={lg}/{s['lgbm_conf']:.0f}% LSTM={ls}/{s['lstm_conf']:.0f}%"
+        return f"  {tf}: {d_str} conf={s['confidence']:.1f}% adx={s['adx']:.0f} regime={s['regime']}{ml_part}"
+
+    lines_out = []
+    for sym in symbols:
+        lines_out.append(f"\n{sym}:")
+        for tf in tfs:
+            lines_out.append(_sig_line(sym, tf))
+
+    prompt = (
+        f"You are a crypto trading agent analyst. Assess trade readiness from live signals.\n\n"
+        f"TRADING RULES:\n"
+        f"- Confidence threshold: {thresh}% (15m conf must be >= {thresh}%)\n"
+        f"- ADX minimum: 20 (below 20 = ranging market = NO trade)\n"
+        f"- HTF confluence: 15m direction must match at least 1 of (1h, 4h)\n"
+        f"- Regime 'ranging' = always NO_TRADE regardless of confidence\n\n"
+        f"CURRENT LIVE SIGNALS ({now_utc}):{''.join(lines_out)}\n\n"
+        f"Respond ONLY in valid JSON (no markdown fences):\n"
+        f'{{\n  "symbols": [\n    {{\n      "symbol": "BTC-USDC",\n      "status": "READY|CLOSE|WATCHING|NO_TRADE",\n'
+        f'      "readiness_pct": 0,\n      "direction": "LONG|SHORT|FLAT",\n'
+        f'      "reasoning": "2 sentence max — current state explanation",\n'
+        f'      "needed": "single most important blocking condition"\n    }}\n  ],\n'
+        f'  "overall_market_view": "1-2 sentence macro summary",\n'
+        f'  "next_opportunity": "SYMBOL DIRECTION — brief reason",\n'
+        f'  "trade_eta": "IMMINENT|THIS_CANDLE|1-3_CANDLES|UNCLEAR|UNLIKELY"\n}}\n\n'
+        f"STATUS: READY=all conditions met; CLOSE=1 condition away; WATCHING=15m signal/no HTF; NO_TRADE=ADX<20 or flat"
+    )
+
+    # ── GPT call — throttled to once per 60s ─────────────────────────────────
+    last_call = st.session_state.get("_analyst_ts", 0)
+    cached    = st.session_state.get("_analyst_result", None)
+    gpt_result = None
+
+    if (_time.time() - last_call >= 60) or cached is None:
+        az_ep  = _os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+        az_key = _os.environ.get("AZURE_OPENAI_KEY", "")
+        az_dep = _os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.2-chat")
+        az_ver = _os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+        if az_ep and az_key:
+            try:
+                from openai import AzureOpenAI as _AZ
+                _cli = _AZ(azure_endpoint=az_ep, api_key=az_key, api_version=az_ver)
+                _resp = _cli.responses.create(
+                    model=az_dep,
+                    input=[
+                        {"role": "system", "content": "You are a precise crypto trading analyst. Output valid JSON only."},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    text={"format": {"type": "json_object"}},
+                    max_output_tokens=4000,
+                )
+                raw = getattr(_resp, "output_text", "") or ""
+                if not raw:
+                    for item in getattr(_resp, "output", []):
+                        for part in getattr(item, "content", []):
+                            raw = getattr(part, "text", "")
+                            if raw: break
+                        if raw: break
+                if raw:
+                    gpt_result = _json.loads(raw)
+                    st.session_state["_analyst_result"] = gpt_result
+                    st.session_state["_analyst_ts"] = _time.time()
+            except Exception as _gpt_err:
+                st.session_state["_analyst_last_err"] = str(_gpt_err)
+
+    if gpt_result is None:
+        gpt_result = cached
+
+    # ── Rule-based fallback ───────────────────────────────────────────────────
+    def _rule(sym):
+        s15 = signals.get((sym, "15m"))
+        s1h = signals.get((sym, "1h"))
+        s4h = signals.get((sym, "4h"))
+        if not s15:
+            return {"status":"NO_TRADE","readiness_pct":0,"direction":"FLAT",
+                    "reasoning":"No signal data.","needed":"Wait for first candle."}
+        d15,c15,a15,r15 = s15["direction"],s15["confidence"],s15["adx"],s15["regime"]
+        d1h = (s1h or {}).get("direction", 0)
+        d4h = (s4h or {}).get("direction", 0)
+        htf = sum(1 for d in [d1h,d4h] if d==d15 and d15!=0)
+        dn  = {1:"LONG",-1:"SHORT",0:"FLAT"}.get(d15,"FLAT")
+        if d15==0 or r15=="ranging" or a15<20:
+            return {"status":"NO_TRADE","readiness_pct":min(int(c15),25),"direction":dn,
+                    "reasoning":f"15m {dn}, ADX {a15:.0f} ({r15}). No directional trade possible.",
+                    "needed":"Need ADX≥20 and non-ranging regime with directional signal."}
+        if c15<thresh and htf==0:
+            return {"status":"NO_TRADE","readiness_pct":20,"direction":dn,
+                    "reasoning":f"{sym} 15m {dn} at {c15:.1f}% conf. HTF not aligned.",
+                    "needed":f"Need conf≥{thresh}% (now {c15:.1f}%) AND at least 1 HTF to agree."}
+        if c15<thresh:
+            return {"status":"WATCHING","readiness_pct":35,"direction":dn,
+                    "reasoning":f"15m {dn} with {htf}/2 HTF agreeing. Confidence {c15:.1f}% below threshold.",
+                    "needed":f"Need confidence≥{thresh}% (currently {c15:.1f}%)."}
+        if htf==0:
+            return {"status":"WATCHING","readiness_pct":50,"direction":dn,
+                    "reasoning":f"15m {dn} at {c15:.1f}% conf above threshold. No HTF alignment yet.",
+                    "needed":"Need 1h or 4h to align with 15m direction."}
+        if htf>=1:
+            return {"status":"CLOSE","readiness_pct":85,"direction":dn,
+                    "reasoning":f"15m {dn} at {c15:.1f}%, {htf}/2 HTF agree. Near trade conditions.",
+                    "needed":"Conditions strengthening — trade may fire next candle close."}
+        return {"status":"READY","readiness_pct":95,"direction":dn,
+                "reasoning":"All conditions met.","needed":"Trade should fire on next evaluation."}
+
+    engine_label, engine_color = "GPT-5.2", "#60a5fa"
+    if gpt_result is None:
+        sym_data = [{"symbol": s, **_rule(s)} for s in symbols]
+        err_msg = st.session_state.get("_analyst_last_err", "")
+        err_hint = f" ({err_msg[:80]})" if err_msg else ""
+        gpt_result = {"symbols": sym_data,
+                      "overall_market_view": f"Rule-based analysis (GPT-5.2 unavailable{err_hint}).",
+                      "next_opportunity": "See per-symbol cards below",
+                      "trade_eta": "UNCLEAR"}
+        engine_label, engine_color = "Rule-Based", "#848e9c"
+
+    # ── Overall banner ────────────────────────────────────────────────────────
+    eta = gpt_result.get("trade_eta", "UNCLEAR")
+    eta_c = {"IMMINENT":"#00ffa3","THIS_CANDLE":"#00ffa3","1-3_CANDLES":"#f0b429",
+             "UNCLEAR":"#848e9c","UNLIKELY":"#606878"}.get(eta, "#848e9c")
+
+    st.markdown(
+        f'<div style="background:#0d1117;border:1px solid #1e2535;border-left:3px solid {engine_color}50;'
+        f'border-radius:8px;padding:12px 16px;margin-bottom:14px;">'
+        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+        f'<span style="font-size:0.7rem;font-weight:700;color:{engine_color};">{engine_label}</span>'
+        f'<span style="color:#2a3040;">·</span>'
+        f'<span style="font-size:0.7rem;color:#848e9c;">Trade ETA:</span>'
+        f'<span style="font-size:0.7rem;font-weight:800;color:{eta_c};">{eta.replace("_"," ")}</span>'
+        f'<span style="margin-left:auto;font-size:0.7rem;color:#5a6070;">🎯 {gpt_result.get("next_opportunity","—")}</span>'
+        f'</div>'
+        f'<div style="font-size:0.8rem;color:#b0b8c8;line-height:1.5;">'
+        f'{gpt_result.get("overall_market_view","")}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Per-symbol readiness cards (3 + 2 layout) ────────────────────────────
+    sym_map = {r["symbol"]: r for r in gpt_result.get("symbols", [])}
+    s_colors = {
+        "READY":    ("#00ffa3", "#081510", "✅"),
+        "CLOSE":    ("#f0b429", "#1a1200", "🟡"),
+        "WATCHING": ("#60a5fa", "#080f1e", "👁"),
+        "NO_TRADE": ("#606878", "#0d0f12", "⛔"),
+    }
+
+    def _row(row_syms):
+        cols = st.columns(len(row_syms))
+        for i, sym in enumerate(row_syms):
+            r  = sym_map.get(sym) or _rule(sym)
+            st_key = r.get("status","NO_TRADE")
+            rdy, dirn = r.get("readiness_pct",0), r.get("direction","FLAT")
+            sc, bg, icon = s_colors.get(st_key, ("#606878","#0d0f12","◌"))
+            bc = sc if rdy>=70 else "#f0b429" if rdy>=40 else "#ff4d4d"
+            dc = "#00ffa3" if dirn=="LONG" else "#ff4d4d" if dirn=="SHORT" else "#606878"
+            cols[i].markdown(
+                f'<div style="background:{bg};border:1px solid {sc}28;border-top:2px solid {sc}80;'
+                f'border-radius:10px;padding:14px;min-height:190px;">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;">'
+                f'<span style="font-size:0.8rem;font-weight:800;color:#e0e0e0;">{sym.replace("-USDC","")}</span>'
+                f'<span style="font-size:0.68rem;font-weight:700;color:{sc};">{icon} {st_key}</span>'
+                f'</div>'
+                f'<div style="font-size:0.88rem;font-weight:700;color:{dc};margin-bottom:9px;">{dirn}</div>'
+                f'<div style="background:#111418;border-radius:4px;height:5px;margin-bottom:4px;">'
+                f'<div style="background:{bc};height:100%;width:{min(rdy,100)}%;border-radius:4px;"></div></div>'
+                f'<div style="font-size:0.67rem;color:{sc};font-weight:700;margin-bottom:9px;">'
+                f'Readiness {rdy}%</div>'
+                f'<div style="font-size:0.7rem;color:#8090a8;line-height:1.45;margin-bottom:9px;">'
+                f'{r.get("reasoning","")}</div>'
+                f'<div style="font-size:0.67rem;color:#d4a520;border-top:1px solid #1a1e26;padding-top:6px;">'
+                f'⚠ {r.get("needed","")}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    _row(symbols[:3])
+    if len(symbols) > 3:
+        st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
+        _row(symbols[3:])
+    st.markdown('<div style="margin-bottom:20px;"></div>', unsafe_allow_html=True)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1586,7 +2698,7 @@ def main():
         orders    = fetch_orders(100)
 
         # Navigation
-        tabs = st.tabs(["Terminal", "Advanced Charts", "Paper Trades", "Inventory", "Intelligence", "Ledger", "System"])
+        tabs = st.tabs(["Terminal", "Brain", "Advanced Charts", "Paper Trades", "Inventory", "Intelligence", "Ledger", "System"])
 
         with tabs[0]: # Overview
             render_live_prices()
@@ -1595,15 +2707,20 @@ def main():
             st.divider()
             render_performance(snapshots, orders)
 
-        with tabs[1]: render_price_charts()
-        with tabs[2]: render_paper_trades()
-        with tabs[3]: render_positions()
-        with tabs[4]:
+        with tabs[1]:
+            st.markdown("## Agent Brain")
+            render_agent_brain()
+            render_ai_thinking()
+
+        with tabs[2]: render_price_charts()
+        with tabs[3]: render_paper_trades()
+        with tabs[4]: render_positions()
+        with tabs[5]:
             render_sentiment_data()
             st.markdown("<hr style='margin:20px 0;border-color:#2d3139;'>", unsafe_allow_html=True)
             render_signals()
-        with tabs[5]: render_trade_history(orders)
-        with tabs[6]: render_logs(150)
+        with tabs[6]: render_trade_history(orders)
+        with tabs[7]: render_logs(150)
 
         # Optional manual trigger (already in sidebar)
         pass

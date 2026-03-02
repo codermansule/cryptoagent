@@ -53,8 +53,8 @@ class MarketFeedManager:
     async def _subscribe_all(self) -> None:
         symbols = self._settings.symbols
         primary_tf = self._settings.primary_timeframe  # 15m — LTF entry trigger
-        # Three-timeframe stack: 15m entry trigger + 1h intermediate + 4h trend bias
-        signal_tfs = [primary_tf, "1h", "4h"]
+        # Six-timeframe stack: 1m/3m/5m fast entry + 15m primary entry + 1h intermediate + 4h trend bias
+        signal_tfs = ["1m", "3m", "5m", primary_tf, "1h", "4h"]
 
         for symbol in symbols:
             for tf in signal_tfs:
