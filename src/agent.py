@@ -157,6 +157,7 @@ class CryptoAgent:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self._main_loop())
             tg.create_task(self._watchdog_loop())
+            tg.create_task(self._command_loop())
 
     async def _recover_paper_positions(self) -> None:
         """
@@ -399,6 +400,84 @@ class CryptoAgent:
                     except Exception as exc:
                         logger.debug("Watchdog alert failed: %s", exc)
                     alerted_at = time.monotonic()
+
+    async def _command_loop(self) -> None:
+        """Listen for dashboard commands via Redis pub/sub."""
+        import redis.asyncio as aioredis
+        import json
+        
+        while self._running:
+            try:
+                r = aioredis.from_url(self._settings.database.redis_url, decode_responses=True)
+                pubsub = r.pubsub()
+                await pubsub.subscribe("agent_commands")
+                async for message in pubsub.listen():
+                    if not self._running:
+                        break
+                    if message["type"] == "message":
+                        try:
+                            cmd = json.loads(message["data"])
+                            action = cmd.get("action")
+                            symbol = cmd.get("symbol")
+                            if not symbol:
+                                continue
+                            
+                            if action == "close_position":
+                                logger.info("Manual close command received", symbol=symbol)
+                                if self._settings.is_paper and self._paper:
+                                    price = self._paper._prices.get(symbol)
+                                    if price:
+                                        self._paper._close_position(symbol, price, reason="manual_close")
+                                elif self._live:
+                                    await self._live.close_position(symbol, reason="manual_close")
+                                    
+                            elif action == "take_profit":
+                                pct = float(cmd.get("pct", 0.5))
+                                logger.info("Manual take profit command received", symbol=symbol, pct=pct)
+                                if self._settings.is_paper and self._paper:
+                                    pos = self._paper._positions.get(symbol)
+                                    price = self._paper._prices.get(symbol)
+                                    if pos and price:
+                                        close_size = pos.size * pct
+                                        if close_size > 0:
+                                            # Close a percentage of the position
+                                            pnl = (price - pos.entry_price) * close_size if pos.side.value == "long" else (pos.entry_price - price) * close_size
+                                            fee = price * close_size * self._paper._fee_pct
+                                            net_pnl = pnl - fee
+                                            
+                                            pos.size -= close_size
+                                            pos.margin -= pos.margin * pct
+                                            pos.realized_pnl += net_pnl
+                                            self._paper._balance_usdt += pos.margin * pct + net_pnl
+                                            self._paper._total_fees_paid += fee
+                                            
+                                            self._paper._pending_closes.append({
+                                                "symbol": symbol, "side": pos.side.value,
+                                                "size": close_size, "entry_price": pos.entry_price,
+                                                "exit_price": price, "sl_price": pos.sl_price, "tp_price": pos.tp_price,
+                                                "pnl": round(net_pnl, 4), "pnl_pct": round(net_pnl / (pos.margin * pct), 6) if pos.margin else 0,
+                                                "fee": round(fee, 4), "close_reason": "manual_take_profit",
+                                                "opened_at": pos.opened_at, "closed_at": int(time.time() * 1000),
+                                                "balance_after": round(self._paper._balance_usdt, 4),
+                                            })
+                                            if pos.size < 0.00001:
+                                                self._paper._positions.pop(symbol, None)
+                                elif self._live:
+                                    # Partial close in live mode logic goes here if implemented
+                                    # For now, default to full close.
+                                    await self._live.close_position(symbol, reason="manual_take_profit")
+                                    
+                        except Exception as e:
+                            logger.error("Error processing manual command", error=str(e))
+                # If we break out of listen()
+                await pubsub.unsubscribe("agent_commands")
+                await r.aclose()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                if self._running:
+                    logger.error("Command loop error", error=str(exc))
+                    await asyncio.sleep(5.0)
 
     async def _main_loop(self) -> None:
         heartbeat = self._settings.heartbeat_interval

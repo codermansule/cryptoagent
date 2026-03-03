@@ -1357,6 +1357,76 @@ def render_equity_curve(snapshots: pd.DataFrame):
             
     except Exception as e:
         st.warning(f"Performance visualization suspended: {e}")
+def render_positions_management():
+    """Manual overlay to close trades or take profit."""
+    st.subheader("Manage Positions")
+    
+    pos = fetch_positions()
+    if pos.empty:
+        orders = fetch_orders(50)
+        if not orders.empty:
+            filled = orders[orders["status"] == "filled"].copy()
+            if not filled.empty:
+                filled = (filled.sort_values("created_at", ascending=False)
+                          .groupby("symbol").first().reset_index())
+                try:
+                    closed = fetch_paper_trades(50)
+                    if not closed.empty:
+                        closed["closed_at"] = pd.to_datetime(closed["closed_at"], utc=True)
+                        filled["created_at"] = pd.to_datetime(filled["created_at"], utc=True)
+                        latest_close = (closed.groupby("symbol")["closed_at"]
+                                        .max().rename("latest_close"))
+                        filled = filled.join(latest_close, on="symbol")
+                        mask = filled["latest_close"].isna() | (
+                            filled["created_at"] > filled["latest_close"]
+                        )
+                        filled = filled[mask]
+                except Exception:
+                    pass
+                if not filled.empty:
+                    pos = pd.DataFrame({"symbol": filled["symbol"]})
+
+    if pos.empty:
+        st.info("No active trades to manage.")
+        return
+
+    syms = pos["symbol"].tolist()
+    
+    import json
+    import redis
+    from src.core.config import get_settings
+    
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        target_sym = st.selectbox("Position", syms, key="manage_sym", label_visibility="collapsed")
+    with col2:
+        action = st.selectbox("Action", [
+            "Close Full Position (100%)",
+            "Take Profit (50%)",
+            "Take Profit (25%)",
+            "Take Profit (10%)"
+        ], key="manage_act", label_visibility="collapsed")
+    with col3:
+        if st.button("Execute", type="primary", use_container_width=True):
+            pct = 1.0
+            if "50%" in action: pct = 0.5
+            elif "25%" in action: pct = 0.25
+            elif "10%" in action: pct = 0.10
+            
+            payload = {
+                "action": "close_position" if pct == 1.0 else "take_profit",
+                "symbol": target_sym,
+                "pct": pct
+            }
+            try:
+                r = redis.from_url(get_settings().database.redis_url)
+                r.publish("agent_commands", json.dumps(payload))
+                r.close()
+                st.success(f"Command sent!")
+            except Exception as e:
+                st.error(f"Failed to send command: {e}")
+    st.markdown("<hr style='border-color:#2d3139; margin-top:5px; margin-bottom:15px;'>", unsafe_allow_html=True)
+
 
 
 @st.fragment(run_every="2s")
@@ -2721,7 +2791,9 @@ def main():
 
         with tabs[2]: render_price_charts()
         with tabs[3]: render_paper_trades()
-        with tabs[4]: render_positions()
+        with tabs[4]: 
+            render_positions_management()
+            render_positions()
         with tabs[5]:
             render_sentiment_data()
             st.markdown("<hr style='margin:20px 0;border-color:#2d3139;'>", unsafe_allow_html=True)
