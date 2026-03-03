@@ -54,6 +54,8 @@ risk:
   trailing_stop_activation_atr: 0     # disabled — tested: creates tiny wins that don't offset full SL losses
   trailing_stop_distance_atr: 1.5     # trail N×ATR behind the best price seen (for future use)
   breakeven_activation_atr: 0.5       # move SL to entry after 0.5×ATR profit — prevents "went positive→SL" losses
+  partial_tp_ratio: 0.5               # close this fraction at 1:1 R (partial TP) — remainder runs to full TP
+  max_hold_hours: 6                   # time-based exit: close position if open longer than N hours
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 execution:

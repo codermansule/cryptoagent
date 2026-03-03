@@ -41,6 +41,11 @@ class PaperPosition:
     # Breakeven stop
     breakeven_activation: float = 0.0  # price distance from entry to trigger breakeven (0 = disabled)
     breakeven_triggered: bool = False   # True once SL has been moved to entry
+    # Partial take-profit (50% at 1:1 R)
+    partial_tp_price: float = 0.0      # price to take 50% profit (0 = disabled)
+    partial_tp_taken: bool = False     # True once 50% has been closed
+    # Time-based exit
+    max_hold_ms: int = 0               # max hold time in ms (0 = disabled); close at market if exceeded
 
     def unrealized_pnl(self, mark_price: float) -> float:
         if self.side == PositionSide.LONG:
@@ -92,7 +97,7 @@ class PaperEngine:
         self._peak_equity: float = self._settings.paper_starting_balance
         self._total_fees_paid: float = 0.0
         self._pending_closes: list[dict] = []             # closed trade events for async processing
-        self._order_trailing: dict[str, tuple[float, float, float]] = {}  # order_id -> (activation, distance, breakeven)
+        self._order_trailing: dict[str, tuple[float, float, float, float, int]] = {}  # order_id -> (activation, distance, breakeven, partial_tp, max_hold_ms)
 
         logger.info(
             "Paper engine initialized",
@@ -160,6 +165,55 @@ class PaperEngine:
                         logger.info("Breakeven stop triggered", symbol=symbol,
                                     entry=round(pos.entry_price, 4), sl_moved_to=round(new_sl, 4))
 
+        # ── Partial TP: close 50% at 1:1 R, move SL to breakeven ──────────────
+        if pos.partial_tp_price > 0 and not pos.partial_tp_taken:
+            hit_partial = (
+                (pos.side == PositionSide.LONG  and price >= pos.partial_tp_price) or
+                (pos.side == PositionSide.SHORT and price <= pos.partial_tp_price)
+            )
+            if hit_partial:
+                # Close half position at current price
+                half_size = pos.size / 2
+                half_margin = pos.margin / 2
+                pnl = (price - pos.entry_price) * half_size if pos.side == PositionSide.LONG \
+                      else (pos.entry_price - price) * half_size
+                fee = price * half_size * self._fee_pct
+                net_pnl = pnl - fee
+                # Update position in-place (keep other half running)
+                pos.size   -= half_size
+                pos.margin -= half_margin
+                pos.realized_pnl += net_pnl
+                self._balance_usdt += half_margin + net_pnl
+                self._total_fees_paid += fee
+                pos.partial_tp_taken = True
+                # Move SL to entry (free ride on remaining half)
+                if pos.side == PositionSide.LONG:
+                    pos.sl_price = max(pos.entry_price, pos.sl_price)
+                else:
+                    pos.sl_price = min(pos.entry_price, pos.sl_price)
+                pos.breakeven_triggered = True
+                logger.info("Partial TP taken (50%)", symbol=symbol,
+                            price=round(price, 4), partial_pnl=round(net_pnl, 4),
+                            sl_moved_to=round(pos.sl_price, 4))
+                self._pending_closes.append({
+                    "symbol": symbol, "side": pos.side.value,
+                    "size": half_size, "entry_price": pos.entry_price,
+                    "exit_price": price, "sl_price": pos.sl_price, "tp_price": pos.tp_price,
+                    "pnl": round(net_pnl, 4), "pnl_pct": round(net_pnl / half_margin, 6) if half_margin else 0,
+                    "fee": round(fee, 4), "close_reason": "partial_take_profit",
+                    "opened_at": pos.opened_at, "closed_at": int(time.time() * 1000),
+                    "balance_after": round(self._balance_usdt, 4),
+                })
+
+        # ── Time-based exit: close if max_hold_ms exceeded ──────────────────
+        if pos.max_hold_ms > 0:
+            held_ms = int(time.time() * 1000) - pos.opened_at
+            if held_ms >= pos.max_hold_ms:
+                logger.info("Time-based exit triggered", symbol=symbol,
+                            held_hours=round(held_ms / 3_600_000, 1))
+                self._close_position(symbol, price, reason="time_exit")
+                return
+
         if pos.tp_price and (
             (pos.side == PositionSide.LONG and price >= pos.tp_price)
             or (pos.side == PositionSide.SHORT and price <= pos.tp_price)
@@ -206,6 +260,8 @@ class PaperEngine:
         trailing_activation: float = 0.0,
         trailing_distance: float = 0.0,
         breakeven_activation: float = 0.0,
+        partial_tp_price: float = 0.0,
+        max_hold_ms: int = 0,
     ) -> Order:
         mark = self._prices.get(symbol) or price
         if mark is None:
@@ -217,8 +273,8 @@ class PaperEngine:
         order_id = f"paper_{uuid.uuid4().hex[:12]}"
         exec_price = price or mark
 
-        # Store trailing + breakeven params keyed by order_id for use when the order fills
-        self._order_trailing[order_id] = (trailing_activation, trailing_distance, breakeven_activation)
+        # Store all exit params keyed by order_id for use when the order fills
+        self._order_trailing[order_id] = (trailing_activation, trailing_distance, breakeven_activation, partial_tp_price, max_hold_ms)
 
         order = Order(
             order_id=order_id,
@@ -254,7 +310,8 @@ class PaperEngine:
         notional = fill_price * order.size
         fee = notional * self._fee_pct
         settings = get_settings()
-        trailing_activation, trailing_distance, breakeven_activation = self._order_trailing.pop(order.order_id, (0.0, 0.0, 0.0))
+        trailing_activation, trailing_distance, breakeven_activation, partial_tp_price, max_hold_ms = \
+            self._order_trailing.pop(order.order_id, (0.0, 0.0, 0.0, 0.0, 0))
 
         if not order.reduce_only:
             # If a position already exists for this symbol, close it first
@@ -292,6 +349,8 @@ class PaperEngine:
                 trailing_distance=trailing_distance,
                 best_price=fill_price,
                 breakeven_activation=breakeven_activation,
+                partial_tp_price=partial_tp_price,
+                max_hold_ms=max_hold_ms,
             )
             self._positions[order.symbol] = pos
         else:

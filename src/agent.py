@@ -649,6 +649,16 @@ class CryptoAgent:
                 trailing_distance = 0.0
             breakeven_activation = settings.breakeven_activation_atr * atr_approx if settings.breakeven_activation_atr > 0 else 0.0
 
+            # Partial TP at 1:1 R (entry ± 1×risk_distance) — takes 50% profit early,
+            # moves SL to entry, lets remaining 50% run to full TP at 2:1 R.
+            if decision.side == "long":
+                partial_tp_price = round(live_price + sl_dist, 6)
+            else:
+                partial_tp_price = round(live_price - sl_dist, 6)
+
+            # Time-based exit: close if still open after 6 hours
+            max_hold_ms = 6 * 3600 * 1000
+
             side = OrderSide.BUY if decision.side == "long" else OrderSide.SELL
             order = self._paper.place_order(
                 symbol=decision.symbol,
@@ -661,6 +671,8 @@ class CryptoAgent:
                 trailing_activation=trailing_activation,
                 trailing_distance=trailing_distance,
                 breakeven_activation=breakeven_activation,
+                partial_tp_price=partial_tp_price,
+                max_hold_ms=max_hold_ms,
             )
             if order:
                 logger.info(
