@@ -38,6 +38,9 @@ class PaperPosition:
     trailing_distance: float = 0.0    # trail this many price units behind best_price
     best_price: float = 0.0           # most favorable price seen since open
     trailing_active: bool = False     # True once profit >= trailing_activation
+    # Breakeven stop
+    breakeven_activation: float = 0.0  # price distance from entry to trigger breakeven (0 = disabled)
+    breakeven_triggered: bool = False   # True once SL has been moved to entry
 
     def unrealized_pnl(self, mark_price: float) -> float:
         if self.side == PositionSide.LONG:
@@ -89,7 +92,7 @@ class PaperEngine:
         self._peak_equity: float = self._settings.paper_starting_balance
         self._total_fees_paid: float = 0.0
         self._pending_closes: list[dict] = []             # closed trade events for async processing
-        self._order_trailing: dict[str, tuple[float, float]] = {}  # order_id -> (activation, distance)
+        self._order_trailing: dict[str, tuple[float, float, float]] = {}  # order_id -> (activation, distance, breakeven)
 
         logger.info(
             "Paper engine initialized",
@@ -137,6 +140,26 @@ class PaperEngine:
                     if new_sl < pos.sl_price:
                         pos.sl_price = new_sl
 
+        # Breakeven stop: once price moves breakeven_activation in our favour,
+        # slide the SL to entry price (no more losing trades that "went positive").
+        if pos.breakeven_activation > 0 and not pos.breakeven_triggered:
+            if pos.side == PositionSide.LONG:
+                if price - pos.entry_price >= pos.breakeven_activation:
+                    new_sl = pos.entry_price
+                    if new_sl > pos.sl_price:
+                        pos.sl_price = new_sl
+                        pos.breakeven_triggered = True
+                        logger.info("Breakeven stop triggered", symbol=symbol,
+                                    entry=round(pos.entry_price, 4), sl_moved_to=round(new_sl, 4))
+            else:  # SHORT
+                if pos.entry_price - price >= pos.breakeven_activation:
+                    new_sl = pos.entry_price
+                    if new_sl < pos.sl_price:
+                        pos.sl_price = new_sl
+                        pos.breakeven_triggered = True
+                        logger.info("Breakeven stop triggered", symbol=symbol,
+                                    entry=round(pos.entry_price, 4), sl_moved_to=round(new_sl, 4))
+
         if pos.tp_price and (
             (pos.side == PositionSide.LONG and price >= pos.tp_price)
             or (pos.side == PositionSide.SHORT and price <= pos.tp_price)
@@ -147,7 +170,12 @@ class PaperEngine:
             (pos.side == PositionSide.LONG and price <= pos.sl_price)
             or (pos.side == PositionSide.SHORT and price >= pos.sl_price)
         ):
-            reason = "trailing_stop" if pos.trailing_active else "stop_loss"
+            if pos.trailing_active:
+                reason = "trailing_stop"
+            elif pos.breakeven_triggered:
+                reason = "breakeven_stop"
+            else:
+                reason = "stop_loss"
             logger.info("SL triggered", symbol=symbol, price=price, sl=pos.sl_price, reason=reason)
             self._close_position(symbol, price, reason=reason)
 
@@ -177,6 +205,7 @@ class PaperEngine:
         reduce_only: bool = False,
         trailing_activation: float = 0.0,
         trailing_distance: float = 0.0,
+        breakeven_activation: float = 0.0,
     ) -> Order:
         mark = self._prices.get(symbol) or price
         if mark is None:
@@ -188,8 +217,8 @@ class PaperEngine:
         order_id = f"paper_{uuid.uuid4().hex[:12]}"
         exec_price = price or mark
 
-        # Store trailing params keyed by order_id for use when the order fills
-        self._order_trailing[order_id] = (trailing_activation, trailing_distance)
+        # Store trailing + breakeven params keyed by order_id for use when the order fills
+        self._order_trailing[order_id] = (trailing_activation, trailing_distance, breakeven_activation)
 
         order = Order(
             order_id=order_id,
@@ -225,7 +254,7 @@ class PaperEngine:
         notional = fill_price * order.size
         fee = notional * self._fee_pct
         settings = get_settings()
-        trailing_activation, trailing_distance = self._order_trailing.pop(order.order_id, (0.0, 0.0))
+        trailing_activation, trailing_distance, breakeven_activation = self._order_trailing.pop(order.order_id, (0.0, 0.0, 0.0))
 
         if not order.reduce_only:
             # If a position already exists for this symbol, close it first
@@ -262,6 +291,7 @@ class PaperEngine:
                 trailing_activation=trailing_activation,
                 trailing_distance=trailing_distance,
                 best_price=fill_price,
+                breakeven_activation=breakeven_activation,
             )
             self._positions[order.symbol] = pos
         else:

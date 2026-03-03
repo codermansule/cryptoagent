@@ -49,10 +49,11 @@ risk:
   max_open_positions: 10
   max_correlated_positions: 3         # max positions in correlated assets (raised for 10-symbol universe)
   atr_sl_multiplier: 2.0              # stop = entry ± N*ATR — optimized via grid search (BTC OOS Sharpe 6.50)
-  rr_ratio: 2.0                       # reward:risk ratio for take-profit
+  rr_ratio: 2.0                       # reward:risk ratio (OOS backtest near-breakeven at 2.0)
   adx_min_threshold: 20.0             # minimum ADX to confirm trend — blocks ranging market entries
-  trailing_stop_activation_atr: 0     # 0 = disabled (trail incompatible with 2.5 ATR SL / 2:1 RR)
-  trailing_stop_distance_atr: 1.5     # trail N*ATR behind the best price seen
+  trailing_stop_activation_atr: 0     # disabled — tested: creates tiny wins that don't offset full SL losses
+  trailing_stop_distance_atr: 1.5     # trail N×ATR behind the best price seen (for future use)
+  breakeven_activation_atr: 0.5       # move SL to entry after 0.5×ATR profit — prevents "went positive→SL" losses
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 execution:

@@ -2037,10 +2037,12 @@ def render_agent_brain():
         st.info("No agent log found. Start the agent first.")
         return
 
-    # ── Read & clean last 1000 lines ─────────────────────────────────────────
+    # ── Read & clean last 3000 lines ─────────────────────────────────────────
+    # 3000 lines covers ~75 min of log output; enough to catch 1h signals.
+    # 4h signals are persisted in session_state across render cycles (see below).
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
-            raw_lines = fh.readlines()[-1000:]
+            raw_lines = fh.readlines()[-3000:]
     except Exception as e:
         st.error(f"Cannot read log: {e}")
         return
@@ -2060,7 +2062,9 @@ def render_agent_brain():
     TS_RE  = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
 
     # ── Parse signals & decision feed ─────────────────────────────────────────
-    signals: dict[tuple, dict] = {}
+    # Seed from persistent session state so low-frequency signals (1h, 4h) that
+    # were logged hours ago and fell out of the 3000-line window are still shown.
+    signals: dict[tuple, dict] = dict(st.session_state.get("_brain_persistent_signals", {}))
     feed: list[tuple[str, str, str]] = []   # (hhmm, message, category)
 
     for line in lines:
@@ -2106,6 +2110,9 @@ def render_agent_brain():
 
     # Share signal state with AI analyst fragment
     st.session_state["_brain_signals"] = dict(signals)
+    # Persist across render cycles — low-frequency signals (1h/4h) survive
+    # the log window; only updated when a fresh signal is parsed (dict.update semantics).
+    st.session_state["_brain_persistent_signals"] = dict(signals)
 
     # Read current threshold for card annotations (session_state always available)
     _cur_thresh = st.session_state.get("conf_threshold_slider", 25)

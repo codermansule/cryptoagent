@@ -130,6 +130,7 @@ class Settings:
         self.adx_min_threshold: float = _r.get("adx_min_threshold", 25.0)
         self.trailing_stop_activation_atr: float = _r.get("trailing_stop_activation_atr", 0.0)
         self.trailing_stop_distance_atr: float = _r.get("trailing_stop_distance_atr", 1.5)
+        self.breakeven_activation_atr: float = _r.get("breakeven_activation_atr", 0.0)
 
         # Execution
         _e = raw["execution"]

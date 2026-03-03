@@ -35,7 +35,10 @@ class CryptoAgent:
         # Per-symbol SL cooldown: symbol -> unix timestamp of last SL hit
         # Prevents re-entry for SL_COOLDOWN_SECS after a stop-loss
         self._sl_cooldown: dict[str, float] = {}
-        self._SL_COOLDOWN_SECS = 600  # 10 minutes
+        self._SL_COOLDOWN_SECS = 2700  # 45 minutes — prevents re-entry after SL in same direction
+        self._sl_hit_count: dict[str, int] = {}         # consecutive SL hits per symbol
+        self._adaptive_threshold: dict[str, float] = {} # symbol -> elevated conf threshold
+        self._adaptive_threshold_until: dict[str, float] = {}  # symbol -> expiry unix ts
 
         # Core subsystems
         self._exchange = BloFinAdapter()
@@ -473,12 +476,30 @@ class CryptoAgent:
             # Set SL cooldowns synchronously BEFORE any awaits so that concurrent
             # candle-processing tasks cannot bypass the guard (asyncio race condition fix).
             for evt in pending_closes:
-                if evt.get("close_reason") == "stop_loss":
-                    self._sl_cooldown[evt["symbol"]] = time.time()
+                if evt.get("close_reason") in ("stop_loss", "breakeven_stop"):
+                    sym = evt["symbol"]
+                    self._sl_cooldown[sym] = time.time()
+                    # Adaptive threshold: raise conf threshold after consecutive SL hits
+                    self._sl_hit_count[sym] = self._sl_hit_count.get(sym, 0) + 1
+                    hits = self._sl_hit_count[sym]
+                    if hits >= 2:
+                        base = self._settings.min_confidence_threshold
+                        overrides = self._settings.symbol_overrides.get(sym, {})
+                        base = overrides.get("min_confidence_threshold", base)
+                        bump = min(hits * 10.0, 30.0)  # +10% per hit, cap at +30%
+                        self._adaptive_threshold[sym] = base + bump
+                        self._adaptive_threshold_until[sym] = time.time() + 4 * 3600  # 4 hours
+                        logger.warning(
+                            "Adaptive threshold raised after consecutive SL hits",
+                            symbol=sym, consecutive_sl_hits=hits,
+                            new_threshold=self._adaptive_threshold[sym],
+                            expires_in_hours=4,
+                        )
                     logger.info(
                         "SL cooldown set",
-                        symbol=evt["symbol"],
+                        symbol=sym,
                         cooldown_secs=self._SL_COOLDOWN_SECS,
+                        consecutive_hits=hits,
                     )
             for close_evt in pending_closes:
                 try:
@@ -545,7 +566,7 @@ class CryptoAgent:
         )
 
         if self._settings.is_paper and self._paper:
-            # ── Guard 1: SL cooldown — block re-entry for 10 min after SL hit ──
+            # ── Guard 1: SL cooldown — block re-entry for 45 min after SL hit ──
             last_sl = self._sl_cooldown.get(decision.symbol, 0.0)
             remaining = self._SL_COOLDOWN_SECS - (time.time() - last_sl)
             if remaining > 0:
@@ -555,6 +576,26 @@ class CryptoAgent:
                     cooldown_remaining_s=round(remaining),
                 )
                 return
+
+            # ── Guard 1b: Adaptive threshold — elevated after consecutive SL hits ──
+            adaptive_until = self._adaptive_threshold_until.get(decision.symbol, 0.0)
+            if time.time() < adaptive_until:
+                effective_threshold = self._adaptive_threshold.get(decision.symbol, 0.0)
+                if decision.confidence < effective_threshold:
+                    logger.warning(
+                        "Trade blocked by adaptive threshold",
+                        symbol=decision.symbol,
+                        confidence=round(decision.confidence, 1),
+                        adaptive_threshold=round(effective_threshold, 1),
+                        expires_in_min=round((adaptive_until - time.time()) / 60),
+                    )
+                    return
+            else:
+                # Adaptive threshold expired — reset consecutive hit counter
+                if decision.symbol in self._adaptive_threshold:
+                    del self._adaptive_threshold[decision.symbol]
+                    del self._adaptive_threshold_until[decision.symbol]
+                    self._sl_hit_count[decision.symbol] = 0
 
             # ── Guard 2: Adjust SL/TP to live price; reject if price past SL ──
             from src.exchanges.base import OrderSide, OrderType
@@ -599,13 +640,14 @@ class CryptoAgent:
         if self._settings.is_paper and self._paper:
             # Compute trailing stop distances in price units from ATR approximation
             settings = self._settings
-            if settings.trailing_stop_activation_atr > 0 and settings.atr_sl_multiplier > 0:
-                atr_approx = sl_dist / settings.atr_sl_multiplier
+            atr_approx = sl_dist / settings.atr_sl_multiplier if settings.atr_sl_multiplier > 0 else sl_dist
+            if settings.trailing_stop_activation_atr > 0:
                 trailing_activation = settings.trailing_stop_activation_atr * atr_approx
                 trailing_distance = settings.trailing_stop_distance_atr * atr_approx
             else:
                 trailing_activation = 0.0
                 trailing_distance = 0.0
+            breakeven_activation = settings.breakeven_activation_atr * atr_approx if settings.breakeven_activation_atr > 0 else 0.0
 
             side = OrderSide.BUY if decision.side == "long" else OrderSide.SELL
             order = self._paper.place_order(
@@ -618,6 +660,7 @@ class CryptoAgent:
                 tp_price=round(tp_price, 6),
                 trailing_activation=trailing_activation,
                 trailing_distance=trailing_distance,
+                breakeven_activation=breakeven_activation,
             )
             if order:
                 logger.info(
