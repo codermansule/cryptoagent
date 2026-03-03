@@ -145,9 +145,9 @@ symbol_overrides:
   SOL-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 15m Sharpe=9.22 WR=62% | 5m:conf=30 atr=2.0 Sharpe=11.17
   XRP-USDC:  {min_confidence_threshold: 55, atr_sl_multiplier: 2.0}  # 15m: no good config  | 5m:conf=30 atr=2.0 Sharpe=11.04
   DOGE-USDC: {min_confidence_threshold: 25, atr_sl_multiplier: 2.0}  # 15m Sharpe=6.84 WR=58% | 5m:conf=25 atr=1.5 Sharpe=3.47
-  # ── New 5 (15m grid search Mar 02) ───────────────────────────────────────
-  BNB-USDC:  {min_confidence_threshold: 25, atr_sl_multiplier: 2.0}  # 15m Sharpe=6.54 WR=50% | 5m:conf=45 atr=1.5 Sharpe=7.61
-  SUI-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 2.5}  # 15m Sharpe=4.27 WR=67% | 5m:conf=40 atr=2.0 Sharpe=11.82
-  ENA-USDC:  {min_confidence_threshold: 25, atr_sl_multiplier: 1.5}  # 15m Sharpe=11.3 WR=73% | 5m:conf=35 atr=2.0 Sharpe=10.02
-  LINK-USDC: {min_confidence_threshold: 25, atr_sl_multiplier: 3.0}  # 15m Sharpe=6.81 WR=64% | 5m:conf=45 atr=2.0 Sharpe=2.64
-  ADA-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 15m Sharpe=16.39 WR=67% | 5m:conf=40 atr=2.0 Sharpe=9.92
+  # ── New 5 (15m grid search Mar 03 2026 | retrained LGBM) ──────────────────
+  BNB-USDC:  {min_confidence_threshold: 25, atr_sl_multiplier: 1.5}  # 15m: all OOS negative; keep conf low to stay flat (best OOS Sharpe=-3.99 WR=43%)
+  SUI-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 1.5}  # 15m: marginal market (best OOS Sharpe=-1.46 WR=50% 10 trades)
+  ENA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 1.5}  # 15m OOS Sharpe=+12.24 WR=67% 12 trades — strong performer
+  LINK-USDC: {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 15m OOS Sharpe=+12.00 WR=47% 15 trades — most robust (35/2.5=+13.07 but only 8 trades)
+  ADA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 2.5}  # 15m OOS Sharpe=+5.71 WR=44% 9 trades
