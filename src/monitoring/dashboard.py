@@ -2139,10 +2139,17 @@ def render_agent_brain():
     SIG_RE = re.compile(
         r"Signal \[([A-Z]+-[A-Z]+)/([^\]]+)\] "
         r"dir=([+-]?\d+) conf=([\d.]+) raw=([+-]?[\d.]+) adx=([\d.]+) regime=(\w+)"
-        r"(?:.*?ml=\(([+-]?\d+),([\d.]+)%\))?"
         r"(?:.*?lgbm=\(([+-]?\d+),([\d.]+)%\))?"
         r"(?:.*?lstm=\(([+-]?\d+),([\d.]+)%\))?"
+        r"(?:.*?tech=([+-]?[\d.]+))?"
+        r"(?:.*?struct=([+-]?[\d.]+))?"
+        r"(?:.*?vol=([+-]?[\d.]+))?"
+        r"(?:.*?sent=([+-]?[\d.]+))?"
+        r"(?:.*?onchain=([+-]?[\d.]+))?"
     )
+    # Track adaptive thresholds parsed from logs
+    adapt_thresh = {} # sym -> {val, until}
+    ADAPT_RE = re.compile(r"Adaptive threshold raised.*?symbol=([A-Z-]+).*?new_threshold=([\d.]+).*?expires_in_hours=([\d.]+)")
     TS_RE  = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
 
     # ── Parse signals & decision feed ─────────────────────────────────────────
@@ -2171,9 +2178,22 @@ def render_agent_brain():
                 "lgbm_conf": float(sig_m.group(9))  if sig_m.group(9)  else None,
                 "lstm_dir":  int(sig_m.group(10))   if sig_m.group(10) else None,
                 "lstm_conf": float(sig_m.group(11)) if sig_m.group(11) else None,
+                "s_tech":    float(sig_m.group(12)) if sig_m.group(12) else 0.0,
+                "s_struct":  float(sig_m.group(13)) if sig_m.group(13) else 0.0,
+                "s_vol":     float(sig_m.group(14)) if sig_m.group(14) else 0.0,
+                "s_sent":    float(sig_m.group(15)) if sig_m.group(15) else 0.0,
+                "s_onchain": float(sig_m.group(16)) if sig_m.group(16) else 0.0,
                 "ts":        hhmm,
             }
             continue
+
+        adapt_m = ADAPT_RE.search(line)
+        if adapt_m:
+            asym = adapt_m.group(1)
+            aval = float(adapt_m.group(2))
+            ahrs = float(adapt_m.group(3))
+            # Rough approximation of expiry since we don't have full date objects for all lines easily
+            adapt_thresh[asym] = {"val": aval, "txt": f"EXPIRES IN ~{ahrs:.0f}H"}
 
         # Decision feed events
         txt = line.strip()[-160:]
@@ -2253,6 +2273,21 @@ def render_agent_brain():
                 f'</div>'
             )
 
+        # Confidence Breakdown Row
+        breakdown_html = ""
+        if sig.get("s_tech") is not None:
+            def _clr(v): return "#00ffa3" if v > 0.05 else "#ff4d4d" if v < -0.05 else "#848e9c"
+            
+            breakdown_html = f"""
+            <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:4px;margin-top:10px;padding-top:8px;border-top:1px solid #2d313940;">
+                <div style="font-size:0.6rem;color:#848e9c;">TECH <span style="color:{_clr(sig['s_tech'])};">{sig['s_tech']:+.2f}</span></div>
+                <div style="font-size:0.6rem;color:#848e9c;">STRUC <span style="color:{_clr(sig['s_struct'])};">{sig['s_struct']:+.2f}</span></div>
+                <div style="font-size:0.6rem;color:#848e9c;">VOL <span style="color:{_clr(sig['s_vol'])};">{sig['s_vol']:+.2f}</span></div>
+                <div style="font-size:0.6rem;color:#848e9c;">SENT <span style="color:{_clr(sig['s_sent'])};">{sig['s_sent']:+.2f}</span></div>
+                <div style="font-size:0.6rem;color:#848e9c;">ONCH <span style="color:{_clr(sig['s_onchain'])};">{sig['s_onchain']:+.2f}</span></div>
+            </div>
+            """
+
         # Why no trade?
         why = ""
         if d == 0:
@@ -2281,7 +2316,7 @@ def render_agent_brain():
             f'  <span style="color:{ac};">ADX {adx:.0f}</span>'
             f'  <span style="color:{rc};font-size:0.65rem;">{reg}</span>'
             f'</div>'
-            f'{ml_html}{why}</div>'
+            f'{ml_html}{breakdown_html}{why}</div>'
         )
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -2433,6 +2468,8 @@ def render_agent_brain():
               {sb_txt}
             </div>
           </div>
+
+          {f'<div style="font-size:0.68rem;color:#f0b429;background:#2b1c08;padding:4px 10px;border-radius:6px;margin-bottom:10px;border:1px solid #f0b42940;">⚠️ ADAPTIVE THRESHOLD: <b>{adapt_thresh[sym]["val"]:.0f}%</b> — {adapt_thresh[sym]["txt"]}</div>' if sym in adapt_thresh else ''}
 
           <!-- Score bar -->
           <div style="position:relative;background:#1e2329;border-radius:6px;height:10px;margin-bottom:6px;">

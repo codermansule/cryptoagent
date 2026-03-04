@@ -259,10 +259,17 @@ class DecisionEngine:
             raw_combined = signal.raw_scores.get("raw_combined", 0.0)
             if signal.direction != 0 or signal.confidence >= 20.0 or abs(raw_combined) >= 0.02:
                 logger.info(
-                    "Signal [%s/%s] dir=%+d conf=%.1f raw=%.3f adx=%.1f regime=%s ml=(%+d,%.0f%%) lgbm=(%+d,%.0f%%) lstm=(%+d,%.0f%%)",
+                    "Signal [%s/%s] dir=%+d conf=%.1f raw=%.3f adx=%.1f regime=%s "
+                    "ml=(%+d,%.0f%%) lgbm=(%+d,%.0f%%) lstm=(%+d,%.0f%%) "
+                    "scores: tech=%.2f struct=%.2f vol=%.2f sent=%.2f onchain=%.2f",
                     symbol, timeframe, signal.direction, signal.confidence, raw_combined, adx_val,
                     signal.regime, ml_signal, ml_conf * 100,
                     lgbm_sig, lgbm_conf * 100, lstm_sig, lstm_conf * 100,
+                    signal.raw_scores.get("technical", 0.0),
+                    signal.raw_scores.get("structure", 0.0),
+                    signal.raw_scores.get("volume", 0.0),
+                    signal.raw_scores.get("sentiment", 0.0),
+                    signal.raw_scores.get("onchain", 0.0),
                 )
             else:
                 logger.debug(
