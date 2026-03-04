@@ -2720,6 +2720,90 @@ def render_ai_thinking():
         _row(symbols[3:])
     st.markdown('<div style="margin-bottom:20px;"></div>', unsafe_allow_html=True)
 
+# ── Chat Terminal ─────────────────────────────────────────────────────────────
+def render_agent_chat():
+    """
+    Interactive ChatGPT-like terminal giving users direct access to
+    GPT-5.2 along with the agent's real-time state.
+    """
+    st.markdown("### 💬 Ask The Agent")
+    st.caption("Chat with GPT-5.2 powered by real-time signals, sentiment, and DB context.")
+
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = [
+            {"role": "assistant", "content": "Hello. I'm connected to the live market data. Want me to evaluate a trade?"}
+        ]
+
+    # Render History
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Chat Input
+    if prompt := st.chat_input("Ask about SOL long, current BTC signals, etc..."):
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing live data..."):
+                import os, json
+                from openai import AzureOpenAI
+                
+                # Assemble live context
+                signals = st.session_state.get("_brain_signals", {})
+                live_prices = st.session_state.get("_live_prices", {})
+                
+                # Context snippet from memory
+                context_str = "LIVE MARKET SNAPSHOT:\\n"
+                for sym, price in live_prices.items():
+                    s15 = signals.get((sym, "15m"), {})
+                    if s15:
+                        dstr = {1:"LONG", -1:"SHORT", 0:"FLAT"}.get(s15.get("direction",0), "FLAT")
+                        conf = s15.get("confidence", 0)
+                        adx = s15.get("adx", 0)
+                        reg = s15.get("regime", "ranging")
+                        context_str += f"- {sym} @ ${price:.2f} | 15m Signal: {dstr} (conf={conf:.1f}%), ADX={adx:.0f} ({reg})\\n"
+                
+                sys_prompt = (
+                    "You are the advanced AI core of CryptoAgent (GPT-5.2). "
+                    "You answer questions from the user (trade operator) about current market conditions. "
+                    "Use the provided live context to base your answers on actual signals. "
+                    "Be direct, analytical, and give concrete recommendations on whether to take a trade."
+                    f"\\n\\n{context_str}"
+                )
+
+                az_ep  = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+                az_key = os.environ.get("AZURE_OPENAI_KEY", "")
+                az_dep = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.2-chat")
+                az_ver = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+                
+                if not az_ep or not az_key:
+                    resp = "Sorry, Azure OpenAI credentials are not configured in my `.env`."
+                    st.markdown(resp)
+                    st.session_state.chat_messages.append({"role": "assistant", "content": resp})
+                    return
+
+                try:
+                    client = AzureOpenAI(azure_endpoint=az_ep, api_key=az_key, api_version=az_ver)
+                    messages = [{"role": "system", "content": sys_prompt}]
+                    # Pass last 5 interactions to retain context
+                    for pt in st.session_state.chat_messages[-5:]:
+                        messages.append({"role": pt["role"], "content": pt["content"]})
+                        
+                    res = client.chat.completions.create(
+                        model=az_dep,
+                        messages=messages,
+                        max_tokens=600,
+                        temperature=0.2
+                    )
+                    
+                    answer = res.choices[0].message.content
+                    st.markdown(answer)
+                    st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+                except Exception as e:
+                    st.error(f"Error connecting to GPT-5.2: {e}")
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -2788,6 +2872,8 @@ def main():
             st.markdown("## Agent Brain")
             render_agent_brain()
             render_ai_thinking()
+            st.divider()
+            render_agent_chat()
 
         with tabs[2]: render_price_charts()
         with tabs[3]: render_paper_trades()
