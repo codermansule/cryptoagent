@@ -635,34 +635,52 @@ def load_demo_data():
 
 
 def _fetch_blofin_prices() -> dict[str, dict]:
-    """Fetch live prices with individual symbol error handling to avoid global block."""
+    """Fetch all live prices in one single batch request to avoid 429s."""
     import urllib.request, json as _json
     import random
     now_ms = datetime.now(timezone.utc).timestamp() * 1000
     prices = {}
     
-    for sym in _TRACKED_SYMBOLS:
-        try:
-            url = f"{_BLOFIN_TICKER_URL}?instId={sym}"
-            req = urllib.request.Request(url, headers={"User-Agent": "CryptoAgent/2.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = _json.loads(resp.read())
+    try:
+        # Fetch ALL tickers in one REST request
+        url = _BLOFIN_TICKER_URL
+        req = urllib.request.Request(url, headers={"User-Agent": "CryptoAgent/2.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            raw_data = _json.loads(resp.read())
+        
+        if raw_data.get("code") == "0" and raw_data.get("data"):
+            all_data = raw_data["data"]
+            ticker_map = { t["instId"]: t for t in all_data if "instId" in t }
             
-            if data.get("code") == "0" and data.get("data"):
-                ticker = data["data"][0]
-                ts = int(ticker.get("ts", now_ms))
-                prices[sym] = {
-                    "price": float(ticker["last"]),
-                    "ts": ts,
-                    "age_s": (now_ms - ts) / 1000,
-                    "source": "live",
-                }
-        except Exception as e:
-            # If API fails, check if we have a previous price in session state to "drift"
-            # This keeps the UI 'ticking' even during 429 rate limits
+            for sym in _TRACKED_SYMBOLS:
+                if sym in ticker_map:
+                    ticker = ticker_map[sym]
+                    ts = int(ticker.get("ts", now_ms))
+                    prices[sym] = {
+                        "price": float(ticker["last"]),
+                        "ts": ts,
+                        "age_s": (now_ms - ts) / 1000,
+                        "source": "live",
+                    }
+                    # Update cache for simulation drift if needed later
+                    st.session_state[f"sim_p_{sym}"] = prices[sym]["price"]
+                else:
+                    # Not found in BloFin response (maybe wrong symbol name?)
+                    prices[sym] = {"price": 0.0, "source": "error", "age_s": 999}
+        else:
+            raise ValueError(f"API Error: {raw_data.get('msg', 'Unknown')}")
+            
+    except Exception as e:
+        # Global fallback: any failure in the batch call triggers drifted simulation
+        # logic for all symbols based on their last known session state price.
+        is_429 = "429" in str(e)
+        if is_429:
+             prices["_rate_limited"] = True
+             
+        for sym in _TRACKED_SYMBOLS:
             prev = st.session_state.get(f"sim_p_{sym}")
             if prev:
-                drift = prev * (random.uniform(-0.0001, 0.0001))
+                drift = prev * (random.uniform(-0.00008, 0.00008))
                 new_p = prev + drift
                 prices[sym] = {
                     "price": new_p,
@@ -672,11 +690,7 @@ def _fetch_blofin_prices() -> dict[str, dict]:
                 }
                 st.session_state[f"sim_p_{sym}"] = new_p
             else:
-                # Initial placeholder if everything fails
                 prices[sym] = {"price": 0.0, "source": "error", "age_s": 999}
-            
-            if "429" in str(e):
-                prices["_rate_limited"] = True
                 
     return prices
 
