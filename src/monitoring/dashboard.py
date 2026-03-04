@@ -2794,7 +2794,7 @@ def render_agent_chat():
                     res = client.chat.completions.create(
                         model=az_dep,
                         messages=messages,
-                        max_tokens=600,
+                        max_completion_tokens=600,
                         temperature=0.2
                     )
                     
