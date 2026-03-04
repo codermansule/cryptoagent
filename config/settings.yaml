@@ -18,6 +18,7 @@ trading:
     - ENA-USDC
     - LINK-USDC
     - ADA-USDC
+    - PIPPIN-USDT
   market_types:
     - futures                         # futures | spot
   default_leverage: 5
@@ -151,3 +152,5 @@ symbol_overrides:
   ENA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 1.5}  # 15m OOS Sharpe=+12.24 WR=67% 12 trades — strong performer
   LINK-USDC: {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 15m OOS Sharpe=+12.00 WR=47% 15 trades — most robust (35/2.5=+13.07 but only 8 trades)
   ADA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 2.5}  # 15m OOS Sharpe=+5.71 WR=44% 9 trades
+  # ── Meme Coin (15m grid search Mar 04 2026) ────────────────────────────────
+  PIPPIN-USDT: {min_confidence_threshold: 25, atr_sl_multiplier: 3.0} # 15m OOS Sharpe=+51.31 WR=100% (High volatility entry)
