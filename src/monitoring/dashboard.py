@@ -1995,6 +1995,43 @@ def render_performance(snapshots: pd.DataFrame, orders: pd.DataFrame):
         m6.metric("Trades", summary.get("total_trades", 0))
         m7.metric("Expectancy", f"${summary.get('expectancy_usdc', 0):.2f}")
         m8.metric("Profit Factor", f"{summary.get('profit_factor', 0):.2f}")
+        
+        # Row 3: Protection Integrity (Mar 04+ Guards)
+        st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+        st.markdown("#### 🛡️ Protection Integrity (since Mar 04 Protections)")
+        
+        # Query stats directly from DB
+        p_sql = "SELECT close_reason, COUNT(*) as count FROM paper_trades WHERE closed_at >= '2026-03-04 12:00:00+00' GROUP BY close_reason"
+        p_df = query_df(p_sql)
+        
+        be_cnt = 0
+        sl_cnt = 0
+        if not p_df.empty:
+            be_cnt = int(p_df[p_df["close_reason"] == "breakeven_stop"]["count"].sum())
+            sl_cnt = int(p_df[p_df["close_reason"] == "stop_loss"]["count"].sum())
+        
+        t_hits = be_cnt + sl_cnt
+        p_score = (be_cnt / t_hits * 100) if t_hits > 0 else 0.0
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Protection Score", f"{p_score:.1f}%", 
+                  help="Percentage of potential losses saved by breakeven guard. (BE / (BE + SL))")
+        c2.metric("Saved (Breakeven)", be_cnt)
+        c3.metric("Losses (Stop Loss)", sl_cnt)
+        
+        # Status Badge
+        s_col = "#00ffa3" if p_score > 75 else "#f0b429" if p_score > 40 else "#848e9c"
+        if t_hits < 5: s_txt = "STABILIZING"
+        elif p_score > 75: s_txt = "VITAL"
+        elif p_score > 40: s_txt = "ACTIVE"
+        else: s_txt = "MONITORING"
+        
+        c4.markdown(f"""
+            <div style="padding: 10px; background: #0d121d; border: 1px solid {s_col}40; border-radius: 8px; text-align: center; margin-top: 5px;">
+                <div style="font-size: 0.65rem; color: #4a5060; font-weight: 700; letter-spacing: 0.1em; margin-bottom: 2px;">GUARD STATUS</div>
+                <div style="font-size: 1rem; font-weight: 800; color: {s_col};">{s_txt}</div>
+            </div>
+        """, unsafe_allow_html=True)
             
     except Exception as e:
         st.warning(f"Strategy metrics computation suspended: {e}")
