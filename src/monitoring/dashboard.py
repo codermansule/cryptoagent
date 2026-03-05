@@ -2853,6 +2853,23 @@ def render_agent_chat():
                         reg = s15.get("regime", "ranging")
                         context_str += f"- {sym} @ ${price:.2f} | 15m Signal: {dstr} (conf={conf:.1f}%), ADX={adx:.0f} ({reg})\\n"
                 
+                # RECENT PERFORMANCE CONTEXT (since Mar 04 guards)
+                p_sql = """
+                    SELECT close_reason, COUNT(*) as count, AVG(pnl_pct) as avg_pnl 
+                    FROM paper_trades 
+                    WHERE closed_at >= '2026-03-04 12:00:00+00' 
+                    GROUP BY close_reason
+                """
+                p_df = query_df(p_sql)
+                perf_info = "RECENT TRADING PERFORMANCE (since protections active):\\n"
+                if not p_df.empty:
+                    for _, row in p_df.iterrows():
+                        perf_info += f"- {row['close_reason']}: {int(row['count'])} trades, Avg PnL: {row['avg_pnl']:.3f}%\\n"
+                else:
+                    perf_info += "No trades recorded for the clean validation period yet.\\n"
+                
+                context_str += "\\n" + perf_info
+                
                 sys_prompt = (
                     "You are the advanced AI core of CryptoAgent (GPT-5.2). "
                     "You answer questions from the user (trade operator) about current market conditions. "
