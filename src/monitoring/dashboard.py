@@ -2843,7 +2843,7 @@ def render_agent_chat():
                 live_prices = st.session_state.get("_live_prices", {})
                 
                 # Context snippet from memory
-                context_str = "LIVE MARKET SNAPSHOT:\\n"
+                context_str = "LIVE MARKET SNAPSHOT:\n"
                 for sym, price in live_prices.items():
                     s15 = signals.get((sym, "15m"), {})
                     if s15:
@@ -2851,7 +2851,7 @@ def render_agent_chat():
                         conf = s15.get("confidence", 0)
                         adx = s15.get("adx", 0)
                         reg = s15.get("regime", "ranging")
-                        context_str += f"- {sym} @ ${price:.2f} | 15m Signal: {dstr} (conf={conf:.1f}%), ADX={adx:.0f} ({reg})\\n"
+                        context_str += f"- {sym} @ ${price:.2f} | 15m Signal: {dstr} (conf={conf:.1f}%), ADX={adx:.0f} ({reg})\n"
                 
                 # RECENT PERFORMANCE CONTEXT (since Mar 04 guards)
                 p_sql = """
@@ -2861,21 +2861,46 @@ def render_agent_chat():
                     GROUP BY close_reason
                 """
                 p_df = query_df(p_sql)
-                perf_info = "RECENT TRADING PERFORMANCE (since protections active):\\n"
+                perf_info = "\nRECENT TRADING PERFORMANCE (since protections active):\n"
                 if not p_df.empty:
                     for _, row in p_df.iterrows():
-                        perf_info += f"- {row['close_reason']}: {int(row['count'])} trades, Avg PnL: {row['avg_pnl']:.3f}%\\n"
+                        perf_info += f"- {row['close_reason']}: {int(row['count'])} trades, Avg PnL: {row['avg_pnl']:.3f}%\n"
                 else:
-                    perf_info += "No trades recorded for the clean validation period yet.\\n"
+                    perf_info += "No trades recorded for the clean validation period yet.\n"
                 
-                context_str += "\\n" + perf_info
+                # OPEN POSITIONS
+                pos_df = fetch_positions()
+                pos_info = "\nCURRENT OPEN POSITIONS:\n"
+                if not pos_df.empty:
+                    for _, p in pos_df.iterrows():
+                        pos_info += f"- {p['symbol']} {p['side']} | Entry: ${p['entry_price']:.2f} | Size: ${p['size_usdc']:.2f}\n"
+                else:
+                    pos_info += "None (Side-lined)\n"
+
+                # SYSTEM SETTINGS & WEIGHTS
+                try:
+                    from src.core.config import get_settings
+                    s = get_settings()
+                    w = s.ensemble_weights
+                    settings_info = (
+                        f"\nSYSTEM CONFIGURATION & WEIGHTS:\n"
+                        f"- ATR SL Multiplier: {s.risk.atr_sl_multiplier}\n"
+                        f"- Kelly Fraction: {s.risk.kelly_fraction}\n"
+                        f"- Weights: Tech={w.technical:.0%}, Struct={w.structure:.0%}, ML={w.ml:.0%}, Vol={w.volume:.0%}, Sent={w.sentiment:.0%}, Onchain={w.onchain:.0%}\n"
+                        f"- Symbols Tracked: {', '.join(s.trading.symbols)}\n"
+                    )
+                except:
+                    settings_info = ""
+
+                context_str += perf_info + pos_info + settings_info
                 
                 sys_prompt = (
                     "You are the advanced AI core of CryptoAgent (GPT-5.2). "
-                    "You answer questions from the user (trade operator) about current market conditions. "
-                    "Use the provided live context to base your answers on actual signals. "
-                    "Be direct, analytical, and give concrete recommendations on whether to take a trade."
-                    f"\\n\\n{context_str}"
+                    "You have DIRECT ACCESS to the live exchange feeds, the internal trading database, and all account metrics provided below. "
+                    "NEVER say you don't have access to live data or account info—the snapshot below IS the live data and account status. "
+                    "Analyze the provided context and answer the user's questions about market conditions, performance, or specific trade viability. "
+                    "Be direct, analytical, and give concrete recommendations based ON THE PROVIDED DATA."
+                    f"\n\n### LIVE DATA SNAPSHOT ###\n{context_str}"
                 )
 
                 az_ep  = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
