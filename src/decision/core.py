@@ -160,6 +160,10 @@ class DecisionEngine:
         self._daily_pnl_pct: float = 0.0
         self._halted: bool = False
 
+        # BTC macro trend cache — updated whenever BTC 4h candle arrives
+        # Used as global directional filter: no alt LONGs in BTC downtrend, no SHORTs in uptrend
+        self._btc_macro_direction: int = 0   # +1 = uptrend, -1 = downtrend, 0 = neutral/unknown
+
     # ── Candle ingestion ───────────────────────────────────────────────────
 
     async def on_candle(self, symbol: str, timeframe: str, df: pd.DataFrame) -> None:
@@ -174,6 +178,13 @@ class DecisionEngine:
         if symbol not in self._buffers:
             self._buffers[symbol] = {}
         self._buffers[symbol][timeframe] = df
+
+        # Update BTC macro direction whenever BTC 4h candle closes
+        if symbol == "BTC-USDC" and timeframe == "4h" and len(df) >= 50:
+            from src.signals.technical.indicators import ema
+            ema50 = float(ema(df["close"], 50).iloc[-1])
+            price  = float(df["close"].iloc[-1])
+            self._btc_macro_direction = 1 if price > ema50 else -1
 
         # Run signal computation asynchronously
         asyncio.create_task(self._process(symbol, timeframe))
@@ -472,6 +483,45 @@ class DecisionEngine:
                 logger.debug(
                     "Correlation guard blocked [%s] %s: %d/%d same-direction positions open.",
                     symbol, proposed_side.upper(), same_dir, self.max_correlated_positions,
+                )
+                return False
+
+        # ── Regime side filter ────────────────────────────────────────────
+        # Enforce allowed_sides from the market regime detector.
+        # TRENDING_DOWN only allows shorts; TRENDING_UP only allows longs.
+        # This prevents going LONG into a crash (the Mar-03 liquidation cause).
+        proposed_side_str = "long" if result.direction == 1 else "short"
+        if result.signals:
+            primary_regime_str = result.signals[0].regime
+            try:
+                primary_regime = Regime(primary_regime_str)
+            except ValueError:
+                primary_regime = Regime.UNKNOWN
+            regime_cfg = regime_multipliers(primary_regime)
+            allowed = regime_cfg.get("allowed_sides", [])
+            if allowed and proposed_side_str not in allowed:
+                logger.info(
+                    "Regime filter blocked [%s] %s — regime=%s only allows %s",
+                    symbol, proposed_side_str.upper(), primary_regime_str, allowed,
+                )
+                return False
+
+        # ── BTC macro trend filter ────────────────────────────────────────
+        # Global directional bias: don't go LONG on any symbol when BTC is in
+        # a downtrend (price < EMA50 on 4h), and vice versa.
+        # This is the single biggest crash-protection layer.
+        # Skip for BTC itself — it drives the filter, not subject to it.
+        if symbol != "BTC-USDC" and self._btc_macro_direction != 0:
+            if proposed_side_str == "long" and self._btc_macro_direction == -1:
+                logger.info(
+                    "BTC macro filter blocked LONG [%s] — BTC in 4h downtrend",
+                    symbol,
+                )
+                return False
+            if proposed_side_str == "short" and self._btc_macro_direction == 1:
+                logger.info(
+                    "BTC macro filter blocked SHORT [%s] — BTC in 4h uptrend",
+                    symbol,
                 )
                 return False
 

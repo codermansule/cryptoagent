@@ -13,12 +13,12 @@ trading:
     - SOL-USDC
     - XRP-USDC
     - DOGE-USDC
-    - BNB-USDC
-    - SUI-USDC
     - ENA-USDC
     - LINK-USDC
     - ADA-USDC
-    - PIPPIN-USDT
+    # BNB-USDC: DISABLED — OOS Sharpe=-3.99 WR=43% (net loser, removed Mar-07)
+    # SUI-USDC: DISABLED — OOS Sharpe=-1.46 WR=50% (marginal loser, removed Mar-07)
+    # PIPPIN-USDT: DISABLED — wrong quote currency (USDT vs USDC), removed Mar-07
   market_types:
     - futures                         # futures | spot
   default_leverage: 5
@@ -50,13 +50,13 @@ risk:
   max_open_positions: 10
   max_correlated_positions: 3         # max positions in correlated assets (raised for 10-symbol universe)
   atr_sl_multiplier: 2.0              # stop = entry ± N*ATR — optimized via grid search (BTC OOS Sharpe 6.50)
-  rr_ratio: 2.0                       # reward:risk ratio (OOS backtest near-breakeven at 2.0)
+  rr_ratio: 2.5                       # raised 2.0→2.5 (Mar-07): live WR=28% needs higher RR to be profitable (BE at 28.6%)
   adx_min_threshold: 20.0             # minimum ADX to confirm trend — blocks ranging market entries
   trailing_stop_activation_atr: 0     # disabled — tested: creates tiny wins that don't offset full SL losses
   trailing_stop_distance_atr: 1.5     # trail N×ATR behind the best price seen (for future use)
-  breakeven_activation_atr: 0.5       # move SL to entry after 0.5×ATR profit — prevents "went positive→SL" losses
+  breakeven_activation_atr: 1.0       # move SL to entry after 1.0×ATR profit (was 0.5 — caused 38% chop rate, widened Mar-07)
   partial_tp_ratio: 0.5               # close this fraction at 1:1 R (partial TP) — remainder runs to full TP
-  max_hold_hours: 6                   # time-based exit: close position if open longer than N hours
+  max_hold_hours: 12                  # extended 6→12h (Mar-07): big winners (SOL +30%, BTC +21%) were 4-5h — need room for overnight trends
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 execution:
@@ -142,7 +142,7 @@ ensemble_weights:
 symbol_overrides:
   # ── Original 5 (15m grid search Mar 01) ──────────────────────────────────
   BTC-USDC:  {min_confidence_threshold: 25, atr_sl_multiplier: 2.0}  # 15m Sharpe=6.50 WR=55% | 5m:conf=50 atr=1.5 Sharpe=14.35
-  ETH-USDC:  {min_confidence_threshold: 40, atr_sl_multiplier: 2.0}  # 15m Sharpe=9.16 WR=75% | 5m:conf=40 atr=2.0 Sharpe=14.57
+  ETH-USDC:  {min_confidence_threshold: 65, atr_sl_multiplier: 2.0}  # raised 40→65 (Mar-07): live 1W/4L -19.1% total — muted until retrain
   SOL-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 15m Sharpe=9.22 WR=62% | 5m:conf=30 atr=2.0 Sharpe=11.17
   XRP-USDC:  {min_confidence_threshold: 55, atr_sl_multiplier: 2.0}  # 15m: no good config  | 5m:conf=30 atr=2.0 Sharpe=11.04
   DOGE-USDC: {min_confidence_threshold: 25, atr_sl_multiplier: 2.0}  # 15m Sharpe=6.84 WR=58% | 5m:conf=25 atr=1.5 Sharpe=3.47

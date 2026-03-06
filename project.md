@@ -45,9 +45,9 @@ Build a high-accuracy, AI-driven autonomous trading agent capable of live tradin
 | Signal engine | ✅ All 10 symbols × 6 TFs (1m/3m/5m/15m/1h/4h) |
 | ML models | ✅ 40 LGBM (75 features, n=1000) + 10 LSTM (all 10 symbols, 15m) |
 | Per-symbol thresholds | ✅ Grid-search optimized (BTC=25, ETH=40, SOL=30, XRP=55, DOGE=25 ...) |
-| Dashboard | ✅ http://localhost:8501 — TradingView charts, live P&L, 6 tabs |
+| Dashboard | ✅ http://localhost:8501 — TradingView charts, live P&L, 7 tabs (Chat added) |
 | Watchdog | ✅ Auto-restarts agent + dashboard if either dies |
-| Portfolio | $10,000 paper — fresh start (25 closed trades in DB from prior runs) |
+| Portfolio | $10,000 paper — ~25 closed trades (Clean Sharpe: 8.73 since guards) |
 
 ---
 
@@ -65,6 +65,7 @@ Build a high-accuracy, AI-driven autonomous trading agent capable of live tradin
 | ENA-USDC | 25% | 1.5× | — |
 | LINK-USDC | 25% | 3.0× | — |
 | ADA-USDC | 30% | 2.0× | — |
+| PIPPIN-USDT | 25% | 3.0× | High volatility meme coin |
 
 ---
 
@@ -189,6 +190,9 @@ Full results: `backtests/optimize_*_*.csv`
 | 16 | Mar 02 | Agent crashes after 10 startup retries | Startup retry now loops **indefinitely** with 300s wait on 429 — no more death loop |
 | 17 | Mar 03 | SL cooldown asyncio race condition | Cooldown was set AFTER `await db.log_paper_trade()` inside for loop → concurrent tasks bypassed it. Fixed: set all cooldowns synchronously BEFORE any awaits |
 | 18 | Mar 03 | Zombie agent accumulation | `main()` overwrote `agent.pid` without killing old process → multiple agents writing to log. Fixed: startup reads old pid, `taskkill /F /PID <old>` before writing new pid |
+| 19 | Mar 04 | 429 Rate Limit Hammering | Dashboard made 10+ REST calls/poll. Fixed: Refactored to single batch ticker call. |
+| 20 | Mar 04 | GPT-5.2 Chat 400 Errors | `temperature` and `max_tokens` unsupported. Fixed: Removed temp, use `max_completion_tokens`. |
+| 21 | Mar 04 | Signal Breakdown Missing | Dashboard cards only showed total. Fixed: Added tech/struct/vol/sent/onchain breakdown logic. |
 
 ---
 

@@ -131,6 +131,7 @@ class Settings:
         self.trailing_stop_activation_atr: float = _r.get("trailing_stop_activation_atr", 0.0)
         self.trailing_stop_distance_atr: float = _r.get("trailing_stop_distance_atr", 1.5)
         self.breakeven_activation_atr: float = _r.get("breakeven_activation_atr", 0.0)
+        self.max_hold_hours: float = _r.get("max_hold_hours", 6.0)
 
         # Execution
         _e = raw["execution"]

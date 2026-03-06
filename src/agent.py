@@ -735,8 +735,8 @@ class CryptoAgent:
             else:
                 partial_tp_price = round(live_price - sl_dist, 6)
 
-            # Time-based exit: close if still open after 6 hours
-            max_hold_ms = 6 * 3600 * 1000
+            # Time-based exit: close after max_hold_hours (read from settings)
+            max_hold_ms = int(settings.max_hold_hours * 3600 * 1000)
 
             side = OrderSide.BUY if decision.side == "long" else OrderSide.SELL
             order = self._paper.place_order(

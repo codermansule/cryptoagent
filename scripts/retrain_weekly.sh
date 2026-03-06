@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Weekly LGBM retraining script — all 10 symbols, all 4 timeframes (1m/3m/5m/15m)
+# Weekly LGBM + LSTM retraining — 8 active symbols x 4 TFs + LSTM 15m
 # Recommended cron: 0 2 * * 0  (Sunday 02:00 UTC)
 # Add to crontab: crontab -e
 #   0 2 * * 0 /path/to/cryptoagent/scripts/retrain_weekly.sh >> /path/to/cryptoagent/logs/retrain.log 2>&1
 
-set -e
 cd "$(dirname "$0")/.."
 source .venv_312/Scripts/activate 2>/dev/null || source .venv_312/bin/activate 2>/dev/null || true
 
-SYMBOLS="BTC-USDC ETH-USDC SOL-USDC XRP-USDC DOGE-USDC BNB-USDC SUI-USDC ENA-USDC LINK-USDC ADA-USDC"
+# Active symbols (BNB/SUI/PIPPIN disabled — negative OOS Sharpe, removed Mar-07)
+SYMBOLS="BTC-USDC ETH-USDC SOL-USDC XRP-USDC DOGE-USDC ENA-USDC LINK-USDC ADA-USDC"
 
+NOW=$(python -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'))")
 echo "============================================================"
-echo " CryptoAgent -- Weekly Model Retraining (10 symbols x 4 TFs)"
-echo " $(date -u)"
+echo " CryptoAgent -- Weekly Model Retraining (8 symbols x 4 TFs)"
+echo " $NOW"
 echo "============================================================"
 
-total=$((10 * 4))
+total=$((8 * 4))
 done=0
 
 for sym in $SYMBOLS; do
@@ -43,7 +44,7 @@ for sym in $SYMBOLS; do
 done
 
 echo ""
-echo "=== LSTM MODELS (all 10 symbols) ==="
+echo "=== LSTM MODELS (8 active symbols, 15m only) ==="
 for sym in $SYMBOLS; do
   echo "Training LSTM $sym 15m..."
   python scripts/train_models.py \
@@ -60,5 +61,5 @@ python scripts/backtest.py \
   --min-confidence 25 --trailing-activation-atr 0 --oos-split 0.25
 
 echo ""
-echo "Retraining complete: $(date -u)"
+echo "Retraining complete: $(python -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'))")"
 echo "============================================================"
