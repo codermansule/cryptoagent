@@ -49,14 +49,14 @@ risk:
   min_liquidation_distance_atr: 3.0   # entry must be 3x ATR from liquidation
   max_open_positions: 10
   max_correlated_positions: 3         # max positions in correlated assets (raised for 10-symbol universe)
-  atr_sl_multiplier: 2.0              # stop = entry ± N*ATR — optimized via grid search (BTC OOS Sharpe 6.50)
-  rr_ratio: 2.5                       # raised 2.0→2.5 (Mar-07): live WR=28% needs higher RR to be profitable (BE at 28.6%)
+  atr_sl_multiplier: 1.5              # 5m-scalp mode: tighter stop (5m ATR ~$200-300 BTC vs $600-800 on 15m)
+  rr_ratio: 2.0                       # 5m-scalp mode: TP hit faster in absolute time with smaller ATR
   adx_min_threshold: 20.0             # minimum ADX to confirm trend — blocks ranging market entries
   trailing_stop_activation_atr: 0     # disabled — tested: creates tiny wins that don't offset full SL losses
   trailing_stop_distance_atr: 1.5     # trail N×ATR behind the best price seen (for future use)
-  breakeven_activation_atr: 1.0       # move SL to entry after 1.0×ATR profit (was 0.5 — caused 38% chop rate, widened Mar-07)
-  partial_tp_ratio: 0.5               # close this fraction at 1:1 R (partial TP) — remainder runs to full TP
-  max_hold_hours: 12                  # extended 6→12h (Mar-07): big winners (SOL +30%, BTC +21%) were 4-5h — need room for overnight trends
+  breakeven_activation_atr: 0.8       # 5m-scalp: tighter than 15m (0.8 ATR), looser than old 0.5 that caused chop
+  partial_tp_ratio: 0.5               # close 50% at 1:1 R — lock in quick profit, let 50% run to 2:1
+  max_hold_hours: 3                   # 5m-scalp mode: exit after 3h max — no overnight positions
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 execution:
@@ -140,17 +140,18 @@ ensemble_weights:
 # 15m thresholds applied globally per symbol (primary ML timeframe)
 # 3m/5m OOS highlights noted in comments for reference
 symbol_overrides:
-  # ── Original 5 (15m grid search Mar 01) ──────────────────────────────────
-  BTC-USDC:  {min_confidence_threshold: 25, atr_sl_multiplier: 2.0}  # 15m Sharpe=6.50 WR=55% | 5m:conf=50 atr=1.5 Sharpe=14.35
-  ETH-USDC:  {min_confidence_threshold: 65, atr_sl_multiplier: 2.0}  # raised 40→65 (Mar-07): live 1W/4L -19.1% total — muted until retrain
-  SOL-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 15m Sharpe=9.22 WR=62% | 5m:conf=30 atr=2.0 Sharpe=11.17
-  XRP-USDC:  {min_confidence_threshold: 55, atr_sl_multiplier: 2.0}  # 15m: no good config  | 5m:conf=30 atr=2.0 Sharpe=11.04
-  DOGE-USDC: {min_confidence_threshold: 25, atr_sl_multiplier: 2.0}  # 15m Sharpe=6.84 WR=58% | 5m:conf=25 atr=1.5 Sharpe=3.47
-  # ── New 5 (15m grid search Mar 03 2026 | retrained LGBM) ──────────────────
-  BNB-USDC:  {min_confidence_threshold: 25, atr_sl_multiplier: 1.5}  # 15m: all OOS negative; keep conf low to stay flat (best OOS Sharpe=-3.99 WR=43%)
-  SUI-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 1.5}  # 15m: marginal market (best OOS Sharpe=-1.46 WR=50% 10 trades)
-  ENA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 1.5}  # 15m OOS Sharpe=+12.24 WR=67% 12 trades — strong performer
-  LINK-USDC: {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 15m OOS Sharpe=+12.00 WR=47% 15 trades — most robust (35/2.5=+13.07 but only 8 trades)
-  ADA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 2.5}  # 15m OOS Sharpe=+5.71 WR=44% 9 trades
-  # ── Meme Coin (15m grid search Mar 04 2026) ────────────────────────────────
-  PIPPIN-USDT: {min_confidence_threshold: 25, atr_sl_multiplier: 3.0} # 15m OOS Sharpe=+51.31 WR=100% (High volatility entry)
+  # ── 5m-scalp optimized (Mar-07 2026) — primary TF now 5m, ATR from 5m candle ──
+  # Format: {min_confidence_threshold, atr_sl_multiplier}
+  # 5m backtest results used where available (OOS Sharpe in comments)
+  BTC-USDC:  {min_confidence_threshold: 50, atr_sl_multiplier: 1.5}  # 5m OOS Sharpe=14.35 WR=~55% — best performer
+  ETH-USDC:  {min_confidence_threshold: 65, atr_sl_multiplier: 2.0}  # muted (Mar-07): live 1W/4L -19.1% — high threshold until next retrain
+  SOL-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 5m OOS Sharpe=11.17 — strong
+  XRP-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 5m OOS Sharpe=11.04 — strong (was 55 on 15m, 30 works on 5m)
+  DOGE-USDC: {min_confidence_threshold: 25, atr_sl_multiplier: 1.5}  # 5m OOS Sharpe=3.47 — moderate, tight SL
+  ENA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 1.5}  # 15m OOS Sharpe=+12.24 — keeping 15m params, 5m not backtested yet
+  LINK-USDC: {min_confidence_threshold: 30, atr_sl_multiplier: 1.5}  # 15m OOS Sharpe=+12.00 — reducing ATR for 5m entry
+  ADA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 2.0}  # 15m OOS Sharpe=+5.71 — keeping conservative
+  # ── Disabled ──────────────────────────────────────────────────────────────
+  # BNB-USDC:  DISABLED — OOS Sharpe=-3.99 WR=43%
+  # SUI-USDC:  DISABLED — OOS Sharpe=-1.46 WR=50%
+  # PIPPIN-USDT: DISABLED — wrong quote currency (USDT vs USDC)

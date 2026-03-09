@@ -561,15 +561,27 @@ class DecisionEngine:
 
     # ── Position sizing and trade construction ─────────────────────────────
 
+    @staticmethod
+    def _tf_minutes(tf: str) -> int:
+        """Convert timeframe string to minutes for proper duration-based sorting."""
+        _map = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                "1h": 60, "2h": 120, "4h": 240, "1d": 1440, "1w": 10080}
+        return _map.get(tf, 9999)
+
     async def _build_decision(
         self, symbol: str, result: ConfluenceResult
     ) -> Optional[TradeDecision]:
         """Build a TradeDecision from a ConfluenceResult."""
         # Get latest bar data for ATR-based SL
         tf_signals = {s.timeframe: s for s in result.signals}
-        # Use primary timeframe data for price/ATR
-        sorted_tfs = sorted(tf_signals.keys())
-        primary_tf: str = sorted_tfs[0] if sorted_tfs else ""
+        # Sort by duration (shortest first) so SL/TP uses the entry TF ATR, not HTF ATR.
+        # Previously sorted alphabetically → "15m" always won → oversized stops.
+        ltf_order = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"]
+        sorted_tfs = sorted(tf_signals.keys(), key=self._tf_minutes)
+        # Prefer the shortest LTF (≤15m) as the primary entry timeframe
+        primary_tf: str = next(
+            (tf for tf in sorted_tfs if self._tf_minutes(tf) <= 15), sorted_tfs[0]
+        ) if sorted_tfs else ""
         if not primary_tf:
             return None
         buffers = self._buffers.get(symbol, {})
