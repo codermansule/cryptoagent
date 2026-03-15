@@ -61,20 +61,23 @@ echo "============================================================"
 echo ""
 echo "Restarting agent to load new models..."
 
-if [ -f agent.pid ]; then
+# Use systemd if available (Azure VM), otherwise fall back to manual PID management
+if systemctl is-active --quiet cryptoagent 2>/dev/null; then
+  echo "Restarting via systemd..."
+  sudo systemctl restart cryptoagent
+  sleep 5
+  NEW_PID=$(systemctl show -p MainPID --value cryptoagent 2>/dev/null || echo "unknown")
+  echo "Agent restarted via systemd (PID $NEW_PID)"
+elif [ -f agent.pid ]; then
   OLD_PID=$(cat agent.pid)
   echo "Killing old agent PID $OLD_PID..."
-  # Windows
-  taskkill //F //PID "$OLD_PID" 2>/dev/null || true
-  # Linux/Mac fallback
   kill -9 "$OLD_PID" 2>/dev/null || true
   sleep 3
+  PYTHONUTF8=1 PYTHONUNBUFFERED=1 python -u -m src.agent >> logs/agent.log 2>&1 &
+  NEW_PID=$!
+  echo $NEW_PID > agent.pid
+  echo "New agent started with PID $NEW_PID"
 fi
 
-echo "Starting new agent..."
-PYTHONUTF8=1 PYTHONUNBUFFERED=1 python -u -m src.agent >> logs/agent.log 2>&1 &
-NEW_PID=$!
-echo $NEW_PID > agent.pid
-echo "New agent started with PID $NEW_PID"
 echo ""
 echo "Daily retrain complete: $(python -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'))")"
