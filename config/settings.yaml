@@ -54,7 +54,7 @@ risk:
   adx_min_threshold: 20.0             # minimum ADX to confirm trend — blocks ranging market entries
   trailing_stop_activation_atr: 0     # disabled — tested: creates tiny wins that don't offset full SL losses
   trailing_stop_distance_atr: 1.5     # trail N×ATR behind the best price seen (for future use)
-  breakeven_activation_atr: 0.8       # 5m-scalp: tighter than 15m (0.8 ATR), looser than old 0.5 that caused chop
+  breakeven_activation_atr: 1.5       # 5m-scalp: 1:1 unlock — only activate BE after price moves full SL distance in our favor (was 0.8, caused 29.5% chop)
   partial_tp_ratio: 0.5               # close 50% at 1:1 R — lock in quick profit, let 50% run to 2:1
   max_hold_hours: 3                   # 5m-scalp mode: exit after 3h max — no overnight positions
 
