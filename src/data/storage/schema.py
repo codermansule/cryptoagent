@@ -276,6 +276,9 @@ class Database:
 
     async def log_paper_trade(self, trade: dict) -> None:
         """Persist a closed paper trade round-trip record."""
+        if not self._pool:
+            raise RuntimeError("Database pool not initialized — call connect() first")
+
         from datetime import datetime, timezone
 
         def _ms(ms: int):

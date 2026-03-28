@@ -186,8 +186,15 @@ class DecisionEngine:
             price  = float(df["close"].iloc[-1])
             self._btc_macro_direction = 1 if price > ema50 else -1
 
-        # Run signal computation asynchronously
-        asyncio.create_task(self._process(symbol, timeframe))
+        # Run signal computation asynchronously; track failures via done callback
+        # so exceptions inside _process() surface in the log even if the task dies.
+        _task = asyncio.create_task(self._process(symbol, timeframe))
+        _task.add_done_callback(
+            lambda t: logger.error(
+                "Signal processing task raised unhandled exception",
+                symbol=symbol, timeframe=timeframe, error=str(t.exception()),
+            ) if not t.cancelled() and t.exception() else None
+        )
 
     # ── Signal computation ─────────────────────────────────────────────────
 
@@ -614,8 +621,11 @@ class DecisionEngine:
         if self._portfolio_value_fn:
             try:
                 portfolio_value = await self._portfolio_value_fn()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error(
+                    "Failed to fetch portfolio value — position sizing will use $10,000 fallback",
+                    error=str(exc),
+                )
 
         risk_per_trade = portfolio_value * (self.max_single_risk_pct / 100.0)
         stop_distance  = abs(entry_price - stop_loss)
@@ -633,6 +643,65 @@ class DecisionEngine:
         # Also cap by fixed risk per trade
         max_size  = (risk_per_trade / stop_distance) * entry_price
         size_usdc = min(size_usdc, max_size)
+
+        # ── Volatility-adjusted sizing ──────────────────────────────────────
+        # Scale position size inversely with ATR/price ratio (volatility %).
+        # High-vol alts (ADA, ENA) get smaller positions; low-vol (BTC) get normal.
+        # This prevents a single volatile trade from wiping out the portfolio.
+        try:
+            from src.core.config import get_settings as _gs
+            _cfg = _gs()
+            if _cfg.volatility_position_scale:
+                vol_ratio = atr_val / entry_price  # e.g. 0.005 = 0.5% per candle
+                # Baseline: 0.3% volatility per 5m candle is "normal" for crypto
+                baseline_vol = 0.003
+                if vol_ratio > baseline_vol:
+                    vol_scale = baseline_vol / vol_ratio  # < 1.0 when vol is high
+                    vol_scale = max(vol_scale, 0.25)      # floor at 25% of normal size
+                    size_usdc *= vol_scale
+                    logger.info(
+                        "Volatility sizing [%s]: vol=%.4f%% scale=%.2f → size $%.1f",
+                        symbol, vol_ratio * 100, vol_scale, size_usdc,
+                    )
+        except Exception:
+            pass
+
+        # ── Regime position size multiplier ─────────────────────────────────
+        # Reduce size in volatile/ranging regimes, boost in breakouts
+        if result.signals:
+            try:
+                primary_regime_str = result.signals[0].regime
+                primary_regime = Regime(primary_regime_str)
+                regime_cfg = regime_multipliers(primary_regime)
+                pos_mult = regime_cfg.get("position_size_mult", 1.0)
+                if pos_mult != 1.0:
+                    size_usdc *= pos_mult
+                    logger.info(
+                        "Regime sizing [%s]: regime=%s mult=%.2f → size $%.1f",
+                        symbol, primary_regime_str, pos_mult, size_usdc,
+                    )
+            except Exception:
+                pass
+
+        # ── Hard single-loss cap ────────────────────────────────────────────
+        # Reject if worst-case SL loss would exceed max_single_loss_pct of portfolio.
+        # This is the ultimate safety net against catastrophic single-trade losses.
+        try:
+            from src.core.config import get_settings as _gs2
+            _cfg2 = _gs2()
+            max_loss_cap = portfolio_value * (_cfg2.max_single_loss_pct / 100.0)
+            worst_case_loss = stop_distance * (size_usdc / entry_price)
+            if worst_case_loss > max_loss_cap:
+                old_size = size_usdc
+                size_usdc = (max_loss_cap / stop_distance) * entry_price
+                logger.warning(
+                    "Single-loss cap applied [%s]: worst=$%.2f > cap=$%.2f — "
+                    "size reduced $%.1f → $%.1f",
+                    symbol, worst_case_loss, max_loss_cap, old_size, size_usdc,
+                )
+        except Exception:
+            pass
+
         size_usdc = max(size_usdc, 1.0)   # minimum $1
 
         reason = (

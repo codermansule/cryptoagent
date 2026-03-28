@@ -40,6 +40,16 @@ class CryptoAgent:
         self._adaptive_threshold: dict[str, float] = {} # symbol -> elevated conf threshold
         self._adaptive_threshold_until: dict[str, float] = {}  # symbol -> expiry unix ts
 
+        # Per-symbol daily loss tracking — blocks symbol if loss exceeds max_loss_per_symbol_pct
+        # Key lesson from trade history: ADA lost $66 (6.6% of portfolio) in one trade,
+        # ENA lost $72 across 2 trades. After a big loss, stop trading that symbol for the day.
+        self._daily_symbol_loss: dict[str, float] = {}   # symbol -> cumulative $ loss today
+        self._daily_loss_reset_date: str = ""             # YYYY-MM-DD of last reset
+
+        # DB write retry queue: trade close events that failed to write on first attempt.
+        # Retried on every subsequent candle tick to avoid silent data loss.
+        self._pending_db_writes: list[dict] = []
+
         # Core subsystems
         self._exchange = BloFinAdapter()
         self._db = Database()
@@ -552,6 +562,25 @@ class CryptoAgent:
         if self._settings.is_paper and self._paper:
             self._paper.update_price(symbol, candle.close)
             pending_closes = self._paper.drain_pending_closes()
+            # Reset daily symbol loss tracker at midnight UTC
+            import datetime
+            today_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+            if today_str != self._daily_loss_reset_date:
+                self._daily_symbol_loss.clear()
+                self._daily_loss_reset_date = today_str
+
+            # Track per-symbol daily losses for circuit breaker
+            for evt in pending_closes:
+                pnl = evt.get("pnl", 0.0)
+                sym = evt["symbol"]
+                if pnl < 0:
+                    self._daily_symbol_loss[sym] = self._daily_symbol_loss.get(sym, 0.0) + abs(pnl)
+                    logger.info(
+                        "Daily symbol loss updated",
+                        symbol=sym, trade_loss=round(abs(pnl), 2),
+                        cumulative_today=round(self._daily_symbol_loss[sym], 2),
+                    )
+
             # Set SL cooldowns synchronously BEFORE any awaits so that concurrent
             # candle-processing tasks cannot bypass the guard (asyncio race condition fix).
             for evt in pending_closes:
@@ -580,9 +609,40 @@ class CryptoAgent:
                         cooldown_secs=self._SL_COOLDOWN_SECS,
                         consecutive_hits=hits,
                     )
+            # Retry any previously failed DB writes first
+            if self._pending_db_writes:
+                still_failing: list[dict] = []
+                for evt in self._pending_db_writes:
+                    try:
+                        await self._db.log_paper_trade(evt)
+                        logger.info(
+                            "Retried DB write succeeded",
+                            symbol=evt["symbol"], reason=evt["close_reason"],
+                        )
+                    except Exception as retry_exc:
+                        logger.error(
+                            "DB write retry failed — will try again next tick",
+                            symbol=evt["symbol"], error=str(retry_exc),
+                        )
+                        still_failing.append(evt)
+                self._pending_db_writes = still_failing
+
             for close_evt in pending_closes:
+                # DB write and alerter are separated so that a Telegram failure
+                # cannot mask a DB failure, and vice-versa.
                 try:
                     await self._db.log_paper_trade(close_evt)
+                except Exception as exc:
+                    logger.error(
+                        "CRITICAL: Failed to write paper trade to DB — queued for retry",
+                        symbol=close_evt["symbol"],
+                        reason=close_evt["close_reason"],
+                        pnl=close_evt.get("pnl"),
+                        error=str(exc),
+                    )
+                    self._pending_db_writes.append(close_evt)
+
+                try:
                     await self._alerter.trade_closed(
                         symbol=close_evt["symbol"],
                         side=close_evt["side"],
@@ -591,8 +651,11 @@ class CryptoAgent:
                         reason=close_evt["close_reason"],
                         exit_price=close_evt["exit_price"],
                     )
-                except Exception as exc:
-                    logger.warning("Failed to record paper trade close", error=str(exc))
+                except Exception as alert_exc:
+                    logger.warning(
+                        "Failed to send trade-closed alert (trade IS in DB)",
+                        symbol=close_evt["symbol"], error=str(alert_exc),
+                    )
 
         # Only append CONFIRMED (closed) candles to the signal buffer.
         # Update watchdog timestamp whenever a confirmed candle arrives.
@@ -645,6 +708,23 @@ class CryptoAgent:
         )
 
         if self._settings.is_paper and self._paper:
+            # ── Guard 0: Per-symbol daily loss cap ──────────────────────────────
+            # If cumulative losses on this symbol today exceed max_loss_per_symbol_pct
+            # of portfolio, block all new trades on it. Prevents ADA/ENA style blowups.
+            max_sym_loss_pct = self._settings.max_loss_per_symbol_pct
+            portfolio_val = self._paper.get_balance().total if self._paper else 10000.0
+            max_sym_loss = portfolio_val * (max_sym_loss_pct / 100.0)
+            cum_loss = self._daily_symbol_loss.get(decision.symbol, 0.0)
+            if cum_loss >= max_sym_loss:
+                logger.warning(
+                    "Trade blocked by per-symbol daily loss cap",
+                    symbol=decision.symbol,
+                    cumulative_loss=round(cum_loss, 2),
+                    cap=round(max_sym_loss, 2),
+                    cap_pct=max_sym_loss_pct,
+                )
+                return
+
             # ── Guard 1: SL cooldown — block re-entry for 45 min after SL hit ──
             last_sl = self._sl_cooldown.get(decision.symbol, 0.0)
             remaining = self._SL_COOLDOWN_SECS - (time.time() - last_sl)
