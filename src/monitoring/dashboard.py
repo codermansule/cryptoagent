@@ -17,6 +17,9 @@ import sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+# Pakistan Standard Time — UTC+5 (no DST)
+PKT = timezone(timedelta(hours=5))
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 os.environ.setdefault("PYTHONUTF8", "1")
 
@@ -828,7 +831,7 @@ def render_header():
     with cols[1]:
         mode = "PAPER" if not CONFIG_OK else get_settings().mode.upper()
         badge_class = "mode-paper" if mode == "PAPER" else "mode-live"
-        updated_at = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
+        updated_at = datetime.now(PKT).strftime('%H:%M:%S PKT')
         
         st.markdown(f"""
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;padding-top:4px;">
@@ -1101,6 +1104,20 @@ def render_paper_trades():
 
     trades = fetch_paper_trades(200)
 
+    # Get TRUE totals from DB (not capped by LIMIT 200)
+    _stats_df = query_df("""
+        SELECT COUNT(*) AS cnt,
+               COALESCE(SUM(pnl), 0) AS total_pnl,
+               COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+        FROM paper_trades WHERE closed_at IS NOT NULL
+    """)
+    if not _stats_df.empty:
+        true_total = int(_stats_df.iloc[0]["cnt"])
+        all_time_pnl = float(_stats_df.iloc[0]["total_pnl"])
+        all_time_wins = int(_stats_df.iloc[0]["wins"])
+    else:
+        true_total, all_time_pnl, all_time_wins = len(trades), 0.0, 0
+
     if trades.empty:
         st.info(
             "No completed paper trades yet. "
@@ -1117,17 +1134,20 @@ def render_paper_trades():
         return
 
     # ── Summary row ──────────────────────────────────────────────────────────
-    total = len(trades)
-    wins  = int((trades["pnl"] > 0).sum())
+    # Use true_total from DB COUNT(*) for the headline number,
+    # but compute stats from the fetched window (last 200 trades).
+    total = true_total
+    displayed = len(trades)
+    wins  = all_time_wins
     losses = total - wins
     win_rate  = wins / total if total else 0.0
-    total_pnl = float(trades["pnl"].sum())
+    total_pnl = all_time_pnl
     best_pnl  = float(trades["pnl"].max())
     worst_pnl = float(trades["pnl"].min())
-    avg_pnl   = float(trades["pnl"].mean())
+    avg_pnl   = total_pnl / total if total else 0.0
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Total Trades", total)
+    c1.metric("Total Trades", f"{total} ({displayed} shown)")
     c2.metric("Win Rate",     f"{win_rate:.1%}",  f"{wins}W / {losses}L")
     c3.metric("Total P&L",   f"${total_pnl:+,.2f}")
     c4.metric("Avg P&L",     f"${avg_pnl:+,.2f}")
@@ -1159,8 +1179,8 @@ def render_paper_trades():
 
         opened_at = pd.to_datetime(t.get("opened_at"), utc=True)
         closed_at = pd.to_datetime(t.get("closed_at"), utc=True)
-        opened_str = opened_at.strftime("%Y-%m-%d  %H:%M:%S UTC") if pd.notnull(opened_at) else "—"
-        closed_str = closed_at.strftime("%Y-%m-%d  %H:%M:%S UTC") if pd.notnull(closed_at) else "—"
+        opened_str = opened_at.tz_convert(PKT).strftime("%Y-%m-%d  %H:%M:%S PKT") if pd.notnull(opened_at) else "—"
+        closed_str = closed_at.tz_convert(PKT).strftime("%Y-%m-%d  %H:%M:%S PKT") if pd.notnull(closed_at) else "—"
 
         # Duration
         if pd.notnull(opened_at) and pd.notnull(closed_at):
@@ -1263,7 +1283,7 @@ def render_trade_notifications():
         status = str(order.get("status", "")).upper()
         filled = order.get("filled_size", 0)
         price = order.get("filled_avg_price") or order.get("price", 0)
-        time_str = pd.to_datetime(order.get("created_at")).strftime("%H:%M:%S") if "created_at" in order else "00:00:00"
+        time_str = pd.to_datetime(order.get("created_at"), utc=True).tz_convert(PKT).strftime("%H:%M:%S PKT") if "created_at" in order else "00:00:00"
         
         bg_color = "rgba(45, 49, 57, 0.3)"
         border_color = "#2d3139"
@@ -1908,7 +1928,7 @@ def render_signals():
         tf        = str(r.get("timeframe", ""))
         conf      = float(r.get("confidence", 0))
         ts_raw    = r.get("time", "")
-        ts_str    = pd.to_datetime(ts_raw).strftime("%m-%d %H:%M") if ts_raw != "" else "—"
+        ts_str    = pd.to_datetime(ts_raw, utc=True).tz_convert(PKT).strftime("%m-%d %H:%M PKT") if ts_raw != "" else "—"
 
         live_info = prices.get(sym, {})
         current   = float(live_info.get("price", 0) or 0)
@@ -1963,7 +1983,7 @@ def render_trade_history(orders: pd.DataFrame):
         return
     df = orders.copy()
     if "created_at" in df.columns:
-        df["time"] = pd.to_datetime(df["created_at"]).dt.strftime("%m-%d %H:%M")
+        df["time"] = pd.to_datetime(df["created_at"], utc=True).dt.tz_convert(PKT).dt.strftime("%m-%d %H:%M PKT")
         df.drop(columns=["created_at"], inplace=True)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -2601,7 +2621,7 @@ def render_ai_thinking():
     symbols = TRADING_SYMBOLS
 
     # ── Section header ────────────────────────────────────────────────────────
-    now_utc = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now_utc = datetime.now(PKT).strftime("%H:%M:%S PKT")
     st.markdown(
         f'<div style="display:flex;align-items:center;gap:12px;margin:28px 0 14px 0;">'
         f'<div style="font-size:0.95rem;font-weight:800;color:#e8e8e8;letter-spacing:0.5px;">🤖 AI TRADE ANALYST</div>'
