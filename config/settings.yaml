@@ -21,8 +21,8 @@ trading:
     # PIPPIN-USDT: DISABLED — wrong quote currency (USDT vs USDC), removed Mar-07
   market_types:
     - futures                         # futures | spot
-  default_leverage: 5
-  max_leverage: 20
+  default_leverage: 3                   # lowered from 5 — trade history shows 20-66x leverage caused -$194 in losses
+  max_leverage: 10                      # lowered from 20 — hard cap to prevent catastrophic leverage
   timeframes:
     - 1m
     - 3m
@@ -57,6 +57,9 @@ risk:
   breakeven_activation_atr: 1.5       # 5m-scalp: 1:1 unlock — only activate BE after price moves full SL distance in our favor (was 0.8, caused 29.5% chop)
   partial_tp_ratio: 0.5               # close 50% at 1:1 R — lock in quick profit, let 50% run to 2:1
   max_hold_hours: 3                   # 5m-scalp mode: exit after 3h max — no overnight positions
+  max_loss_per_symbol_pct: 3.0         # per-symbol daily loss cap (% of portfolio) — blocks symbol after big loss
+  volatility_position_scale: true      # scale position size inversely with ATR volatility — high vol = smaller size
+  max_single_loss_pct: 2.0             # hard cap: reject trade if worst-case SL loss > 2% of portfolio
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 execution:
@@ -148,9 +151,9 @@ symbol_overrides:
   SOL-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 5m OOS Sharpe=11.17 — strong
   XRP-USDC:  {min_confidence_threshold: 30, atr_sl_multiplier: 2.0}  # 5m OOS Sharpe=11.04 — strong (was 55 on 15m, 30 works on 5m)
   DOGE-USDC: {min_confidence_threshold: 25, atr_sl_multiplier: 1.5}  # 5m OOS Sharpe=3.47 — moderate, tight SL
-  ENA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 1.5}  # 15m OOS Sharpe=+12.24 — keeping 15m params, 5m not backtested yet
+  ENA-USDC:  {min_confidence_threshold: 50, atr_sl_multiplier: 2.0}  # RAISED from 35→50: -$72 loss in trade history (Mar 18-19), high vol alt needs strong conviction
   LINK-USDC: {min_confidence_threshold: 30, atr_sl_multiplier: 1.5}  # 15m OOS Sharpe=+12.00 — reducing ATR for 5m entry
-  ADA-USDC:  {min_confidence_threshold: 35, atr_sl_multiplier: 2.0}  # 15m OOS Sharpe=+5.71 — keeping conservative
+  ADA-USDC:  {min_confidence_threshold: 55, atr_sl_multiplier: 2.5}  # RAISED from 35→55: -$66 loss at 66x (Mar 18), highest vol alt — wider SL + higher bar
   # ── Disabled ──────────────────────────────────────────────────────────────
   # BNB-USDC:  DISABLED — OOS Sharpe=-3.99 WR=43%
   # SUI-USDC:  DISABLED — OOS Sharpe=-1.46 WR=50%

@@ -132,6 +132,9 @@ class Settings:
         self.trailing_stop_distance_atr: float = _r.get("trailing_stop_distance_atr", 1.5)
         self.breakeven_activation_atr: float = _r.get("breakeven_activation_atr", 0.0)
         self.max_hold_hours: float = _r.get("max_hold_hours", 6.0)
+        self.max_loss_per_symbol_pct: float = _r.get("max_loss_per_symbol_pct", 3.0)
+        self.volatility_position_scale: bool = _r.get("volatility_position_scale", False)
+        self.max_single_loss_pct: float = _r.get("max_single_loss_pct", 2.0)
 
         # Execution
         _e = raw["execution"]
